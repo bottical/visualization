@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>倉庫作業進捗｜ローカルデモ</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">WAREHOUSE OPERATIONS</p>
+      <h1>倉庫作業進捗 <span>ローカルデモ</span></h1>
+    </div>
+    <div class="header-meta"><span class="live-dot"></span>自動保存 <strong id="saved-at">未保存</strong></div>
+  </header>
+
+  <nav class="tabs" aria-label="画面切り替え">
+    <button class="tab active" data-tab="summary">全体サマリー</button>
+    <button class="tab" data-tab="picking">ピッキング詳細</button>
+    <button class="tab" data-tab="packing">梱包詳細</button>
+    <button class="tab" data-tab="settings">当日入力・設定</button>
+  </nav>
+
+  <main>
+    <section id="summary" class="panel active" aria-labelledby="summary-title">
+      <div class="section-heading"><div><p class="eyebrow">TODAY'S OVERVIEW</p><h2 id="summary-title">全体サマリー</h2></div><p class="muted">ピック構成を反映した平均生産性から理想進捗を算出します</p></div>
+      <div id="progress-time-info" class="inline-metrics time-info"></div>
+      <div id="kpi-grid" class="kpi-grid"></div>
+      <div class="card staffing-card">
+        <div class="card-title"><div><span class="tag calc">計算値</span><h3>現在の人員状況</h3></div></div>
+        <div id="staffing-summary" class="staffing-summary"></div>
+        <p class="staffing-note">梱包開始期限を迎えたラインの必要人数を共通投入可能総人員から控除しています</p>
+      </div>
+      <div class="card chart-card">
+        <div class="card-title"><div><span class="tag calc">計算値</span><h3>理想／実績進捗</h3></div><div class="legend"><span><i class="ideal"></i>理想進捗</span><span><i class="actual"></i>実績進捗</span></div></div>
+        <canvas id="progress-chart" height="340" aria-label="理想進捗と実績進捗の折れ線グラフ"></canvas>
+        <div class="event-strip" id="event-strip"></div>
+      </div>
+      <div class="section-heading compact"><div><p class="eyebrow">PACKING DEADLINES</p><h2>梱包ライン開始期限</h2></div><p class="muted">最新開始＝これより遅いと所定能力では締切に間に合わなくなる理論上の時刻</p></div>
+      <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>ライン</th><th>概算対象件数</th><th>平均シェア</th><th>処理能力</th><th>必要人数</th><th>締切</th><th>最新開始時刻</th><th>状態</th></tr></thead><tbody id="packing-summary-body"></tbody></table></div></div>
+    </section>
+
+    <section id="picking" class="panel" aria-labelledby="picking-title">
+      <div class="section-heading"><div><p class="eyebrow">PICKING DETAIL</p><h2 id="picking-title">ピッキング詳細</h2></div><div id="pick-metrics" class="inline-metrics"></div></div>
+      <div id="pick-cards" class="process-grid"></div>
+      <div class="card table-card"><div class="card-title"><div><span class="tag input">当日入力</span><h3>バッチ別対象件数</h3></div></div><div class="table-scroll"><table><thead><tr><th>ピック区分</th><th>標準生産性</th><th>6時対象</th><th>10時追加</th><th>13時追加</th><th>当日合計</th><th>標準作業量</th></tr></thead><tbody id="pick-table-body"></tbody></table></div></div>
+    </section>
+
+    <section id="packing" class="panel" aria-labelledby="packing-title">
+      <div class="section-heading"><div><p class="eyebrow">PACKING DETAIL</p><h2 id="packing-title">梱包詳細</h2></div><p class="muted">受領シェア100.1%を計算時に正規化</p></div>
+      <div id="packing-notice" class="notice"></div>
+      <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>ライン</th><th>平均シェア</th><th>概算件数</th><th>能力</th><th>必要人数</th><th>締切</th><th>バッファ</th><th>必要時間</th><th>最新開始時刻</th><th>現在状態</th></tr></thead><tbody id="packing-detail-body"></tbody></table></div></div>
+      <p class="footnote">※ 手梱包は配送区分により締切が異なる可能性があります。機械4ラインは固定能力・固定人数であり、人数比例で能力を変更しません。</p>
+    </section>
+
+    <section id="settings" class="panel" aria-labelledby="settings-title">
+      <div class="section-heading"><div><p class="eyebrow">DAILY INPUT & SETTINGS</p><h2 id="settings-title">当日入力・設定</h2></div><div class="actions"><button id="clear-daily" class="btn secondary">当日データをクリア</button><button id="reset-all" class="btn danger">すべて初期化</button></div></div>
+      <div id="validation" class="validation" aria-live="polite"></div>
+      <div class="settings-grid">
+        <div class="card"><div class="card-title"><div><span class="tag input">当日入力</span><h3>当日条件</h3></div></div><div id="daily-fields" class="form-grid"></div></div>
+        <div class="card"><div class="card-title"><div><span class="tag standard">標準値</span><h3>時刻・判定設定</h3></div></div><div id="time-fields" class="form-grid"></div></div>
+      </div>
+      <div class="card table-card"><div class="card-title"><div><span class="tag actual-tag">実績値</span><h3>時刻別累計実績（10分単位）</h3></div><button id="add-actual" class="btn primary">＋ 行を追加</button></div><div class="table-scroll"><table><thead><tr><th>時刻</th><th>累計実績件数</th><th></th></tr></thead><tbody id="actual-table-body"></tbody></table></div><p class="footnote">空欄は0ではなく未入力として扱い、最初の空欄以降はグラフを描画しません。工程別内訳はPhase 2で対応予定です。</p></div>
+      <div class="card table-card"><div class="card-title"><div><span class="tag standard">標準値</span><h3>マスター値</h3></div></div><div class="table-scroll"><table><thead><tr><th>区分</th><th>名称</th><th>生産性／能力</th><th>人数</th><th>受領シェア</th><th>備考</th></tr></thead><tbody id="master-table-body"></tbody></table></div></div>
+    </section>
+  </main>
+  <footer>LOCAL DEMO · データはこのブラウザの localStorage のみに保存されます</footer>
+  <script src="app.js"></script>
+</body>
+</html>
