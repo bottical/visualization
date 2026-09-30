@@ -86,10 +86,14 @@ function calculateStandardHours(counts) { const productivities = PICK_KEYS.map(k
 function calculateAverageProductivity(totals = getPickTotals()) { return totals.totalCount > 0 && totals.totalHours > 0 ? totals.totalCount / totals.totalHours : null; }
 function batchCounts(field) { return Object.fromEntries(PICK_KEYS.map(k => [k, validNonNegativeInteger(state.dailyInput.picks[k][field])])); }
 function allBatchEntered(field) { return Object.values(batchCounts(field)).every(Number.isFinite); }
-function getReleasedPickTotal(minute) {
+function getReleasedBatchFields(minute) {
   const t10 = timeToMinutes(state.settings.times.batch10), t13 = timeToMinutes(state.settings.times.batch13);
   if (![minute, t10, t13].every(isFiniteNumber)) return null;
-  const fields = minute < t10 ? ["batch6"] : minute < t13 ? ["batch6", "batch10"] : ["batch6", "batch10", "batch13"];
+  return minute < t10 ? ["batch6"] : minute < t13 ? ["batch6", "batch10"] : ["batch6", "batch10", "batch13"];
+}
+function getReleasedPickTotal(minute) {
+  const fields = getReleasedBatchFields(minute);
+  if (!fields) return null;
   if (!fields.every(allBatchEntered)) return null;
   return PICK_KEYS.reduce((total, key) => total + sum(fields.map(field => batchCounts(field)[key])), 0);
 }
@@ -223,6 +227,35 @@ function calculateCurrentStaffingSummary() {
   const staffingStatus = totalPeople === null || packingPeople === null ? null : totalPeople >= packingPeople ? "充足" : "不足";
   return { totalPeople, packingPeople, pickingPeople, nextPackingStart, staffingStatus };
 }
+function calculatePickingStaffAllocation(pickingPeopleOverride) {
+  const currentMinute = timeToMinutes(state.dailyInput.currentTime);
+  const fields = getReleasedBatchFields(currentMinute);
+  const staffing = calculateCurrentStaffingSummary();
+  const totalPeople = pickingPeopleOverride === undefined ? staffing.pickingPeople : pickingPeopleOverride;
+  if (totalPeople === null || !Number.isInteger(totalPeople) || totalPeople < 0 || !fields || !fields.every(allBatchEntered)) {
+    return { totalPeople: null, totalWorkHours: null, rows: [], status: "unavailable" };
+  }
+  const rows = PICK_KEYS.map((key, index) => {
+    const releasedCount = sum(fields.map(field => batchCounts(field)[key]));
+    const productivity = Number(state.settings.picking[key]);
+    const workHours = Number.isFinite(productivity) && productivity > 0 ? releasedCount / productivity : null;
+    return { key, name: PICK_NAMES[key], index, releasedCount, productivity, workHours };
+  });
+  if (rows.some(row => row.workHours === null)) return { totalPeople, totalWorkHours: null, rows: [], status: "unavailable" };
+  const totalWorkHours = sum(rows.map(row => row.workHours));
+  if (!(totalWorkHours > 0)) {
+    return { totalPeople, totalWorkHours: 0, rows: rows.map(row => ({ ...row, share: 0, rawPeople: 0, people: 0 })), status: "no-work" };
+  }
+  rows.forEach(row => {
+    row.share = row.workHours / totalWorkHours;
+    row.rawPeople = totalPeople * row.share;
+    row.people = Math.floor(row.rawPeople);
+  });
+  const remainderOrder = [...rows].sort((a, b) => (b.rawPeople - b.people) - (a.rawPeople - a.people) || a.index - b.index);
+  const remaining = totalPeople - sum(rows.map(row => row.people));
+  for (let i = 0; i < remaining; i += 1) remainderOrder[i].people += 1;
+  return { totalPeople, totalWorkHours, rows, status: "ready" };
+}
 function renderStaffingSummary() {
   const { totalPeople, packingPeople, pickingPeople, nextPackingStart, staffingStatus } = calculateCurrentStaffingSummary();
   const items = [
@@ -233,6 +266,11 @@ function renderStaffingSummary() {
     ["人員余力", staffingStatus === null ? `<span class="status">未判定</span>` : `<span class="status ${staffingStatus === "充足" ? "good" : "bad"}">${staffingStatus}</span>`]
   ];
   document.querySelector("#staffing-summary").innerHTML = items.map(([label, value]) => `<div class="staffing-metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
+  const allocation = calculatePickingStaffAllocation();
+  const allocationBox = document.querySelector("#picking-staff-allocation");
+  if (allocation.status === "unavailable") allocationBox.innerHTML = `<div class="allocation-message">人員条件未確定</div>`;
+  else if (allocation.status === "no-work") allocationBox.innerHTML = `<div class="allocation-message">対象作業なし</div>`;
+  else allocationBox.innerHTML = `<div class="allocation-grid">${allocation.rows.map(row => `<div class="allocation-item"><span>${row.name}</span><strong>${row.people}人</strong><small>作業量比 ${formatNumber(row.share * 100, 1)}%</small></div>`).join("")}</div><div class="allocation-total"><span>合計</span><strong>${allocation.totalPeople}人</strong></div>`;
 }
 function renderSummary() {
   const m = currentMetrics(); const ready = m.current && m.idealPoint; const pace = ready && m.recentSpeed !== null && m.idealSpeed > 0 ? m.recentSpeed / m.idealSpeed * 100 : null;
@@ -254,11 +292,13 @@ function renderSummary() {
 }
 function renderPickTable() {
   const totals = getPickTotals();
+  const allocation = calculatePickingStaffAllocation();
+  const allocationByKey = Object.fromEntries(allocation.rows.map(row => [row.key, row]));
   const rows = PICK_KEYS.map(k => { const r = totals.rows[k], provisional = k !== "total"; return `<tr><td><strong>${PICK_NAMES[k]}</strong>${provisional ? ' <span class="tag provisional">暫定値</span>' : ""}</td><td class="number">${formatNumber(state.settings.picking[k],1)} 件/人時</td>${["batch6","batch10","batch13"].map(f => `<td class="input-cell">${input(`dailyInput.picks.${k}.${f}`,state.dailyInput.picks[k][f],{min:0,step:"1",label:`${PICK_NAMES[k]} ${f}`})}</td>`).join("")}<td class="number">${formatNumber(r.total)} 件</td><td class="number">${r.hours === null ? "－" : `${formatNumber(r.hours,2)} 人時`}</td></tr>`; }).join("");
   document.querySelector("#pick-table-body").innerHTML = rows + `<tr class="total"><td colspan="5">合計</td><td class="number">${formatNumber(totals.totalCount)} 件</td><td class="number">${totals.totalHours === null ? "－" : `${formatNumber(totals.totalHours,2)} 人時`}</td></tr>`;
-  const avg = calculateAverageProductivity(totals); document.querySelector("#pick-metrics").innerHTML = `<div class="mini-metric"><span>全体標準作業量</span><strong>${totals.totalHours === null ? "－" : `${formatNumber(totals.totalHours,2)} 人時`}</strong></div><div class="mini-metric"><span>構成反映平均生産性</span><strong>${avg === null ? "－" : `${formatNumber(avg,1)} 件/人時`}</strong></div>`;
+  const avg = calculateAverageProductivity(totals); document.querySelector("#pick-metrics").innerHTML = `<div class="mini-metric"><span>全体標準作業量</span><strong>${totals.totalHours === null ? "－" : `${formatNumber(totals.totalHours,2)} 人時`}</strong></div><div class="mini-metric"><span>構成反映平均生産性</span><strong>${avg === null ? "－" : `${formatNumber(avg,1)} 件/人時`}</strong></div><div class="mini-metric"><span>現在ピッキング可能人数</span><strong>${allocation.totalPeople === null ? "－" : `${allocation.totalPeople}人`}</strong></div>`;
   const actuals = getContiguousActuals(); const latest = actuals.at(-1)?.source;
-  document.querySelector("#pick-cards").innerHTML = PICK_KEYS.map(k => `<div class="card process-card"><h3>${PICK_NAMES[k]}</h3><div class="process-data"><div><span>当日対象</span><strong>${formatNumber(totals.rows[k].total)}件</strong></div><div><span>最新実績</span><strong>${latest?.breakdown?.[k] != null ? `${formatNumber(valueOrNull(latest.breakdown[k]))}件` : latest ? "内訳なし" : "実績未入力"}</strong></div><div><span>生産性</span><strong>${formatNumber(state.settings.picking[k],1)}</strong></div><div><span>作業量</span><strong>${formatNumber(totals.rows[k].hours,2)}人時</strong></div></div></div>`).join("");
+  document.querySelector("#pick-cards").innerHTML = PICK_KEYS.map(k => `<div class="card process-card"><h3>${PICK_NAMES[k]}</h3><div class="process-data"><div><span>当日対象</span><strong>${formatNumber(totals.rows[k].total)}件</strong></div><div><span>最新実績</span><strong>${latest?.breakdown?.[k] != null ? `${formatNumber(valueOrNull(latest.breakdown[k]))}件` : latest ? "内訳なし" : "実績未入力"}</strong></div><div><span>生産性</span><strong>${formatNumber(state.settings.picking[k],1)}</strong></div><div><span>当日総作業量</span><strong>${formatNumber(totals.rows[k].hours,2)}人時</strong></div><div><span>現在対象作業量</span><strong>${allocation.status === "ready" ? `${formatNumber(allocationByKey[k].workHours,2)}人時` : "－"}</strong></div><div><span>目安人数</span><strong>${allocation.status === "ready" ? `${allocationByKey[k].people}人` : "－"}</strong></div></div></div>`).join("");
 }
 function packingStatus(line) { const now = timeToMinutes(state.dailyInput.currentTime), deadline = timeToMinutes(line.deadline); if (line.count === null || now === null) return "未判定"; if (line.effectiveCapacity === null || line.latestStartMinutes === null || deadline === null) return "算出不可"; if (now < Math.floor(line.latestStartMinutes)) return "開始前"; if (now <= deadline) return "開始期限到来"; return "締切超過"; }
 function renderPackingTable(selector, detail) {
