@@ -249,7 +249,8 @@ function renderSummary() {
   document.querySelector("#kpi-grid").innerHTML = items.map(x => `<div class="kpi ${x[3]}"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join("");
   renderStaffingSummary();
   const t = state.settings.times; document.querySelector("#event-strip").innerHTML = [[t.start,"開始"],[t.batch10,"バッチ追加"],[t.batch13,"バッチ追加"],[t.alert,"警戒ライン"]].map(x => `<span class="event"><strong>${x[0]}</strong> ${x[1]}</span>`).join("");
-  renderPackingTable("#packing-summary-body", false); renderChart(m.ideal, m.actual);
+  const packing = calculatePackingAllocation();
+  renderPackingTable("#packing-summary-body", false); renderChart(m.ideal, m.actual, { currentMinute: isFiniteNumber(m.currentMinute) ? m.currentMinute : timeToMinutes(state.dailyInput.currentTime), finishMinute: m.finish, packing });
 }
 function renderPickTable() {
   const totals = getPickTotals();
@@ -301,6 +302,38 @@ function renderValidationMessages() {
   const box=document.querySelector("#validation"); box.innerHTML=messages.length?`<strong>入力内容を確認してください</strong><ul>${[...new Set(messages)].map(m=>`<li>${m}</li>`).join("")}</ul>`:""; box.classList.toggle("show",messages.length>0);
 }
 function truncateAtFirstMissing(points) { const missing = points.findIndex(point => point.count === null); return points.slice(0, missing < 0 ? points.length : missing); }
+function getChartMarkers({ currentMinute, finishMinute, packing = [] } = {}) {
+  const markers = packing.filter(line => line.count > 0 && isFiniteNumber(line.latestStartMinutes)).map(line => ({ type: "packing", minute: line.latestStartMinutes, label: `${line.name} 最新開始 ${minutesToDeadlineTime(line.latestStartMinutes)}`, isPast: isFiniteNumber(currentMinute) && line.latestStartMinutes <= currentMinute }));
+  if (isFiniteNumber(finishMinute)) markers.push({ type: "finish", minute: finishMinute, label: `ピッキング終了見込み ${minutesToTime(finishMinute)}` });
+  if (isFiniteNumber(currentMinute)) markers.push({ type: "current", minute: currentMinute, label: `現在 ${minutesToTime(currentMinute)}` });
+  return markers;
+}
+function getChartTimeRange({ startMinute, alertMinute, currentMinute, latestActualMinute, finishMinute, packing = [] }) {
+  const start = isFiniteNumber(startMinute) ? startMinute : 570;
+  // 入力ミスで描画領域が無制限に広がらないよう、開始から12時間以内に制限する。
+  const limit = Math.min(1439, start + 12 * 60);
+  const packingMinutes = packing.filter(line => line.count > 0 && isFiniteNumber(line.latestStartMinutes)).map(line => line.latestStartMinutes);
+  const candidates = [alertMinute, currentMinute, latestActualMinute, finishMinute, ...packingMinutes].filter(value => isFiniteNumber(value) && value >= start && value <= limit);
+  const lastEvent = Math.max(start + 15, ...candidates);
+  return { start, end: Math.min(limit, Math.max(start + 30, lastEvent + 15)) };
+}
+function drawMarkerLabel(ctx, marker, markerX, labelY, left, right) {
+  ctx.font = marker.type === "finish" ? "bold 11px sans-serif" : "11px sans-serif";
+  const textWidth = ctx.measureText(marker.label).width, boxWidth = textWidth + 8;
+  let labelX = markerX + 5;
+  if (labelX + boxWidth > right) labelX = markerX - boxWidth - 5;
+  labelX = Math.max(left, Math.min(labelX, right - boxWidth));
+  ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.fillRect(labelX, labelY - 11, boxWidth, 15);
+  ctx.fillStyle = marker.type === "current" ? "#667789" : marker.type === "finish" ? "#18354d" : marker.isPast ? "#7a6950" : "#765900";
+  ctx.fillText(marker.label, labelX + 4, labelY);
+}
+function drawVerticalMarker(ctx, marker, markerX, top, bottom, labelY, left, right) {
+  ctx.save(); ctx.beginPath(); ctx.moveTo(markerX, top); ctx.lineTo(markerX, bottom);
+  if (marker.type === "packing") { ctx.strokeStyle = marker.isPast ? "#a9a39a" : "#b39600"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); }
+  else if (marker.type === "finish") { ctx.strokeStyle = "#18354d"; ctx.lineWidth = 2.5; ctx.setLineDash([]); }
+  else { ctx.strokeStyle = "#8b98a3"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]); }
+  ctx.stroke(); ctx.restore(); drawMarkerLabel(ctx, marker, markerX, labelY, left, right);
+}
 function appendActualRow() {
   if (state.actuals.some(row => !row.time || row.totalCompleted === "" || row.totalCompleted === null || row.totalCompleted === undefined)) return false;
   const actuals = calculateActualProgress();
@@ -310,11 +343,14 @@ function appendActualRow() {
   state.actuals.push({time:minutesToTime(nextMinute),totalCompleted:"",breakdown:null});
   return true;
 }
-function renderChart(ideal, actual) {
+function renderChart(ideal, actual, chartData = {}) {
   const canvas=document.querySelector("#progress-chart"), dpr=window.devicePixelRatio||1, width=canvas.clientWidth||1100, height=340; canvas.width=width*dpr; canvas.height=height*dpr; const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr); ctx.clearRect(0,0,width,height);
-  const start=timeToMinutes(state.settings.times.start)||570, latestActual=Math.max(start,...actual.filter(p=>p.count!==null).map(p=>p.minute)), baseEnd=Math.max(timeToMinutes(state.settings.times.alert)||840,timeToMinutes(state.dailyInput.currentTime)||start,latestActual),end=Math.max(start+30,baseEnd+10); const valid=[...ideal.map(x=>x.count),...actual.map(x=>x.count)].filter(isFiniteNumber); const max=Math.max(100,...valid)*1.1; const pad={l:62,r:18,t:22,b:42},x=m=>pad.l+(m-start)/(end-start)*(width-pad.l-pad.r),y=v=>height-pad.b-v/max*(height-pad.t-pad.b);
+  const configuredStart=timeToMinutes(state.settings.times.start), latestActual=Math.max(isFiniteNumber(configuredStart)?configuredStart:570,...actual.filter(p=>p.count!==null&&isFiniteNumber(p.minute)).map(p=>p.minute));
+  const {start,end}=getChartTimeRange({startMinute:configuredStart,alertMinute:timeToMinutes(state.settings.times.alert),currentMinute:chartData.currentMinute,latestActualMinute:latestActual,finishMinute:chartData.finishMinute,packing:chartData.packing}); const valid=[...ideal.map(x=>x.count),...actual.map(x=>x.count)].filter(isFiniteNumber); const max=Math.max(100,...valid)*1.1; const pad={l:62,r:18,t:82,b:42},x=m=>pad.l+(m-start)/(end-start)*(width-pad.l-pad.r),y=v=>height-pad.b-v/max*(height-pad.t-pad.b);
   ctx.font="11px sans-serif"; ctx.fillStyle="#71808d"; ctx.strokeStyle="#e2e7eb"; for(let i=0;i<=4;i++){const val=max*i/4,yy=y(val);ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(width-pad.r,yy);ctx.stroke();ctx.fillText(formatNumber(val),8,yy+4)}
   [start,timeToMinutes(state.settings.times.batch10),timeToMinutes(state.settings.times.batch13),timeToMinutes(state.settings.times.alert),end].filter(isFiniteNumber).forEach(m=>{ctx.fillText(minutesToTime(m),x(m)-16,height-15)});
+  const markers=getChartMarkers(chartData).filter(marker=>marker.minute>=start&&marker.minute<=end).sort((a,b)=>a.minute-b.minute), laneLastX=[-Infinity,-Infinity,-Infinity];
+  markers.forEach(marker=>{let lane=0;if(marker.type==="packing"){lane=laneLastX.findIndex(last=>x(marker.minute)-last>=145);if(lane<0)lane=laneLastX.indexOf(Math.min(...laneLastX));laneLastX[lane]=x(marker.minute)}else lane=marker.type==="finish"?2:1;drawVerticalMarker(ctx,marker,x(marker.minute),pad.t-8,height-pad.b,18+lane*20,pad.l,width-pad.r)});
   function line(points,color,stopAtMissing=false){const selected=points.filter(p=>p.minute>=start&&p.minute<=end), usable=stopAtMissing?truncateAtFirstMissing(selected):selected.filter(p=>p.count!==null);if(!usable.length)return;ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=3;usable.forEach((p,i)=>i?ctx.lineTo(x(p.minute),y(p.count)):ctx.moveTo(x(p.minute),y(p.count)));ctx.stroke()}
   line(ideal,"#2878bd"); line(actual,"#f47b20",true); if(!ideal.length){ctx.fillStyle="#667789";ctx.font="bold 15px sans-serif";ctx.textAlign="center";ctx.fillText("件数と時間帯別投入人数を入力すると理想進捗を表示します",width/2,height/2);ctx.textAlign="start"}
 }
