@@ -21,19 +21,28 @@ function emptyPicks() { return Object.fromEntries(PICK_KEYS.map(k => [k, { batch
 function defaultState() {
   return { version: 1, settings: clone(MASTER_DEFAULTS), dailyInput: { picks: emptyPicks(), staffing: { before10: "", before13: "", after13: "" }, currentTime: "", outsourced: "", bufferMinutes: "", manualPeople: "" }, actuals: [], updatedAt: "" };
 }
+function normalizeTimeValue(value) {
+  if (typeof value !== "string") return "";
+  const match = value.match(/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/);
+  return match ? `${match[1]}:${match[2]}` : "";
+}
 function mergeState(raw) {
   const base = defaultState();
   if (!raw || raw.version !== 1) return base;
-  return {
+  const merged = {
     ...base, ...raw,
     settings: { ...base.settings, ...(raw.settings || {}), picking: { ...base.settings.picking, ...(raw.settings?.picking || {}) }, times: { ...base.settings.times, ...(raw.settings?.times || {}) }, packing: Array.isArray(raw.settings?.packing) ? base.settings.packing.map((line, index) => ({ ...line, ...raw.settings.packing[index], deadlineType: line.deadlineType })) : base.settings.packing },
     dailyInput: { ...base.dailyInput, ...(raw.dailyInput || {}), picks: { ...base.dailyInput.picks, ...(raw.dailyInput?.picks || {}) }, staffing: { ...base.dailyInput.staffing, ...(raw.dailyInput?.staffing || {}) } },
-    actuals: Array.isArray(raw.actuals) ? raw.actuals.map(row => ({ time: row.time || "", totalCompleted: row.totalCompleted ?? (PICK_KEYS.every(k => row[k] !== "" && row[k] != null) ? PICK_KEYS.reduce((total, k) => total + Number(row[k]), 0) : ""), breakdown: row.breakdown || null })) : []
+    actuals: Array.isArray(raw.actuals) ? raw.actuals.map(row => ({ time: normalizeTimeValue(row.time), totalCompleted: row.totalCompleted ?? (PICK_KEYS.every(k => row[k] !== "" && row[k] != null) ? PICK_KEYS.reduce((total, k) => total + Number(row[k]), 0) : ""), breakdown: row.breakdown || null })) : []
   };
+  merged.dailyInput.currentTime = normalizeTimeValue(merged.dailyInput.currentTime);
+  Object.keys(merged.settings.times).forEach(key => { merged.settings.times[key] = normalizeTimeValue(merged.settings.times[key]); });
+  return merged;
 }
 function loadState() { try { return mergeState(JSON.parse(localStorage.getItem(STORAGE_KEY))); } catch (_) { return defaultState(); } }
 let state = loadState();
-function saveState() { state.updatedAt = new Date().toISOString(); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* storage unavailable: UI remains usable */ } document.querySelector("#saved-at").textContent = new Date(state.updatedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+function normalizeStateTimes() { state.dailyInput.currentTime = normalizeTimeValue(state.dailyInput.currentTime); Object.keys(state.settings.times).forEach(key => { state.settings.times[key] = normalizeTimeValue(state.settings.times[key]); }); state.actuals.forEach(row => { row.time = normalizeTimeValue(row.time); }); }
+function saveState() { normalizeStateTimes(); state.updatedAt = new Date().toISOString(); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* storage unavailable: UI remains usable */ } document.querySelector("#saved-at").textContent = new Date(state.updatedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
 function resetDailyData() { if (!confirm("当日の件数・人数・実績をクリアします。マスター値は維持されます。よろしいですか？")) return; state.dailyInput = defaultState().dailyInput; state.actuals = []; saveState(); renderAll(); }
 function resetAll() { if (!confirm("保存内容をすべて削除し、標準マスターへ戻します。よろしいですか？")) return; localStorage.removeItem(STORAGE_KEY); state = defaultState(); saveState(); renderAll(); }
 
@@ -43,9 +52,19 @@ const validNonNegativeInteger = v => { const n = validNonNegative(v); return n !
 const isFiniteNumber = v => typeof v === "number" && Number.isFinite(v);
 const sum = values => values.reduce((a, b) => a + b, 0);
 const formatNumber = (v, digits = 0) => isFiniteNumber(v) ? v.toLocaleString("ja-JP", { maximumFractionDigits: digits, minimumFractionDigits: digits }) : "－";
-function timeToMinutes(time) { if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time || "")) return null; const [h, m] = time.split(":").map(Number); return h * 60 + m; }
+function timeToMinutes(time) { const normalized = normalizeTimeValue(time); if (!normalized) return null; const [h, m] = normalized.split(":").map(Number); return h * 60 + m; }
 function minutesToTime(minutes) { if (!isFiniteNumber(minutes)) return "－"; const safe = Math.round(minutes); const h = Math.floor(((safe % 1440) + 1440) % 1440 / 60); const m = ((safe % 60) + 60) % 60; return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; }
 function minutesToDeadlineTime(minutes) { if (!isFiniteNumber(minutes)) return "－"; const safe = Math.floor(minutes); const h = Math.floor(((safe % 1440) + 1440) % 1440 / 60); const m = ((safe % 60) + 60) % 60; return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; }
+function buildTenMinuteTimeOptions(selectedValue = "") {
+  const start = timeToMinutes(state.settings.times.start), values = [];
+  if (start !== null) for (let minute = start; minute < 1440; minute += 10) values.push(minutesToTime(minute));
+  const options = ['<option value="">－</option>'];
+  if (selectedValue && !values.includes(selectedValue)) {
+    options.push(`<option value="${selectedValue}" selected disabled>${selectedValue}（10分刻み不一致）</option>`);
+  }
+  values.forEach(value => options.push(`<option value="${value}"${value === selectedValue ? " selected" : ""}>${value}</option>`));
+  return options.join("");
+}
 
 function getPickTotals() {
   const rows = {};
@@ -83,7 +102,7 @@ function isPackingScheduleReady(allocations) {
 }
 function calculateIdealProgress() {
   const start = timeToMinutes(state.settings.times.start), t10 = timeToMinutes(state.settings.times.batch10), t13 = timeToMinutes(state.settings.times.batch13), current = timeToMinutes(state.dailyInput.currentTime);
-  if ([start, t10, t13, current].some(v => v === null) || !(start < t10 && t10 < t13) || current < start) return [];
+  if ([start, t10, t13, current].some(v => v === null) || !(start < t10 && t10 < t13) || current < start || (current - start) % 10 !== 0) return [];
   const requiredFields = current < t10 ? ["batch6"] : current < t13 ? ["batch6", "batch10"] : ["batch6", "batch10", "batch13"];
   if (!requiredFields.every(allBatchEntered)) return [];
   const releasedTotal = getReleasedPickTotal(current); if (releasedTotal === null) return [];
@@ -122,9 +141,11 @@ function calculateIdealSpeedAt(minute) {
 }
 function calculateActualProgress() {
   const start = timeToMinutes(state.settings.times.start);
+  let previousMinute = null;
   return state.actuals.map(row => {
     const minute = timeToMinutes(row.time), count = validNonNegativeInteger(row.totalCompleted);
-    const validTime = minute !== null && start !== null && minute >= start && (minute - start) % 10 === 0;
+    const validTime = minute !== null && start !== null && minute >= start && (minute - start) % 10 === 0 && (previousMinute === null || minute > previousMinute);
+    if (minute !== null) previousMinute = minute;
     return { minute, count, valid: validTime && count !== null, source: row };
   });
 }
@@ -178,7 +199,7 @@ function calculatePackingAllocation(totalOverride = null) {
   });
 }
 
-function input(path, value, options = {}) { const attrs = [`type="${options.type || "number"}"`, `value="${value ?? ""}"`, `data-path="${path}"`]; if (options.min !== undefined) attrs.push(`min="${options.min}"`); if (options.max !== undefined) attrs.push(`max="${options.max}"`); if (options.step) attrs.push(`step="${options.step}"`); return `<input ${attrs.join(" ")} aria-label="${options.label || path}">`; }
+function input(path, value, options = {}) { const type = options.type || "number"; const attrs = [`type="${type}"`, `value="${value ?? ""}"`, `data-path="${path}"`]; if (options.min !== undefined) attrs.push(`min="${options.min}"`); if (type === "number" && options.max !== undefined) attrs.push(`max="${options.max}"`); if (options.step !== undefined) attrs.push(`step="${options.step}"`); return `<input ${attrs.join(" ")} aria-label="${options.label || path}">`; }
 function setPath(path, value) { const parts = path.split("."); let target = state; parts.slice(0, -1).forEach(p => { target = target[p]; }); target[parts.at(-1)] = value; }
 function statusClass(status) { return ["完了", "先行", "順調", "開始前"].includes(status) ? "good" : ["遅延・回復中", "開始期限到来"].includes(status) ? "warn" : ["遅延拡大", "締切超過"].includes(status) ? "bad" : ""; }
 
@@ -245,21 +266,31 @@ function renderPackingTable(selector, detail) {
 }
 function renderPackingDetail() { renderPackingTable("#packing-detail-body", true); const outsourced = valueOrNull(state.dailyInput.outsourced); document.querySelector("#packing-notice").textContent = outsourced === null ? "外部委託件数が未入力のため、社内梱包対象件数と概算値は確定できません。" : "表示件数・最新開始時刻は入力条件から算出した概算値です。確定実績ではありません。"; }
 function renderSettings() {
-  const daily = [["現在時刻","currentTime","理想進捗・期限判定の基準", "time"],["外部委託件数","outsourced","件"],["出荷前バッファ","bufferMinutes","分（当日設定）"],["手梱包当日投入人数","manualPeople","人（0～30）"],["09:30～10:00 投入可能総人数","staffing.before10","人"],["10:00～13:00 投入可能総人数","staffing.before13","人"],["13:00以降 投入可能総人数","staffing.after13","人"]];
-  document.querySelector("#daily-fields").innerHTML = daily.map(([label,key,note,type]) => { const path = `dailyInput.${key}`, val = key.includes(".") ? key.split(".").reduce((o,k)=>o[k],state.dailyInput) : state.dailyInput[key]; return `<div class="field"><label>${label}</label>${input(path,val,{type:type||"number",min:type?undefined:0,max:key==="manualPeople"?30:undefined,step:"1",label})}<small>${note}・空欄は未入力</small></div>`; }).join("");
+  const daily = [["現在時刻","currentTime","理想進捗・期限判定の基準（10分単位・秒入力不可）", "time"],["外部委託件数","outsourced","件"],["出荷前バッファ","bufferMinutes","分（当日設定）"],["手梱包当日投入人数","manualPeople","人（0～30）"],["09:30～10:00 投入可能総人数","staffing.before10","人"],["10:00～13:00 投入可能総人数","staffing.before13","人"],["13:00以降 投入可能総人数","staffing.after13","人"]];
+  document.querySelector("#daily-fields").innerHTML = daily.map(([label,key,note,type]) => { const path = `dailyInput.${key}`, val = key.includes(".") ? key.split(".").reduce((o,k)=>o[k],state.dailyInput) : state.dailyInput[key]; const control = type === "time" ? `<select data-path="${path}" aria-label="${label}">${buildTenMinuteTimeOptions(val)}</select>` : input(path,val,{min:0,max:key==="manualPeople"?30:undefined,step:1,label}); return `<div class="field"><label>${label}</label>${control}<small>${note}・空欄は未入力</small></div>`; }).join("");
   const times = [["ピッキング開始","start"],["10時バッチ","batch10"],["13時バッチ","batch13"],["13時前主要作業目標（参考設定）","primaryGoal"],["ピッキング警戒ライン","alert"],["ゆうパケット締切","packetDeadline"],["ゆうパック等締切","parcelDeadline"]];
-  document.querySelector("#time-fields").innerHTML = times.map(([label,key]) => `<div class="field"><label>${label}</label>${input(`settings.times.${key}`,state.settings.times[key],{type:"time",label})}</div>`).join("") + `<div class="field"><label>許容遅れ（分）</label>${input("settings.toleranceMinutes",state.settings.toleranceMinutes,{min:0,step:"1"})}</div><div class="field"><label>直近速度参照（分）</label>${input("settings.recentWindowMinutes",state.settings.recentWindowMinutes,{min:10,step:"10"})}</div>`;
+  document.querySelector("#time-fields").innerHTML = times.map(([label,key]) => `<div class="field"><label>${label}</label>${input(`settings.times.${key}`,state.settings.times[key],{type:"time",step:60,label})}</div>`).join("") + `<div class="field"><label>許容遅れ（分）</label>${input("settings.toleranceMinutes",state.settings.toleranceMinutes,{min:0,step:1})}</div><div class="field"><label>直近速度参照（分）</label>${input("settings.recentWindowMinutes",state.settings.recentWindowMinutes,{min:10,step:10})}</div>`;
   renderActualTable(); renderMasterTable();
 }
-function renderActualTable() { document.querySelector("#actual-table-body").innerHTML = state.actuals.length ? state.actuals.map((r,i) => `<tr><td class="input-cell"><input type="time" value="${r.time??""}" data-actual="${i}.time" aria-label="実績時刻"></td><td class="input-cell"><input type="number" min="0" step="1" value="${r.totalCompleted??""}" data-actual="${i}.totalCompleted" aria-label="累計実績件数"></td><td><button class="btn icon" data-remove-actual="${i}">削除</button></td></tr>`).join("") : `<tr><td colspan="3" class="muted">実績は未入力です。「行を追加」から入力してください。</td></tr>`; }
+function renderActualTable() { document.querySelector("#actual-table-body").innerHTML = state.actuals.length ? state.actuals.map((r,i) => `<tr><td class="input-cell"><select data-actual="${i}.time" aria-label="実績時刻">${buildTenMinuteTimeOptions(r.time)}</select></td><td class="input-cell"><input type="number" min="0" step="1" value="${r.totalCompleted??""}" data-actual="${i}.totalCompleted" aria-label="累計実績件数"></td><td><button class="btn icon" data-remove-actual="${i}">削除</button></td></tr>`).join("") : `<tr><td colspan="3" class="muted">実績は未入力です。「行を追加」から入力してください。</td></tr>`; }
 function renderMasterTable() {
   const picks = PICK_KEYS.map(k => `<tr><td>ピッキング</td><td>${PICK_NAMES[k]}${k!=="total"?' <span class="tag provisional">暫定値</span>':""}</td><td class="input-cell">${input(`settings.picking.${k}`,state.settings.picking[k],{min:.1,step:"0.1"})}</td><td>－</td><td>－</td><td>${k!=="total"?"共通暫定値":"標準値"}</td></tr>`).join("");
   const packing = state.settings.packing.map((x,i) => `<tr><td>梱包</td><td>${x.name}</td><td class="input-cell">${input(`settings.packing.${i}.capacity`,x.capacity,{min:.1,step:"0.1"})}</td><td>${x.id==="manual"?"当日入力（最大30）":`${x.people}人（固定）`}</td><td class="input-cell">${input(`settings.packing.${i}.share`,x.share,{min:0,step:"0.1"})}</td><td>${x.id==="manual"?"件/人時":"件/時"}</td></tr>`).join(""); document.querySelector("#master-table-body").innerHTML = picks + packing;
 }
+function getTimeValidationMessages() {
+  const messages = [], start = timeToMinutes(state.settings.times.start), now = timeToMinutes(state.dailyInput.currentTime);
+  if (now !== null && start !== null && now >= start && (now - start) % 10 !== 0) messages.push("現在時刻はピッキング開始時刻から10分刻みで入力してください。");
+  const entered = state.actuals.map((row, index) => ({ index, minute: timeToMinutes(row.time) })).filter(row => row.minute !== null);
+  const frequencies = new Map(); entered.forEach(row => frequencies.set(row.minute, (frequencies.get(row.minute) || 0) + 1));
+  if ([...frequencies.values()].some(count => count > 1)) messages.push("同一時刻の実績が重複しています。");
+  for (let i = 1; i < entered.length; i += 1) if (entered[i].minute < entered[i - 1].minute) messages.push(`${entered[i].index + 1}行目の実績時刻は前行より後の時刻を入力してください。`);
+  return messages;
+}
 function renderValidationMessages() {
-  const messages = []; document.querySelectorAll("input:invalid").forEach(el => messages.push(`${el.getAttribute("aria-label") || "入力値"}を確認してください。`));
+  const messages = getTimeValidationMessages(); document.querySelectorAll("input:invalid").forEach(el => messages.push(`${el.getAttribute("aria-label") || "入力値"}を確認してください。`));
   const rawActuals = calculateActualProgress(), actuals = rawActuals.filter(x => x.valid); for (let i=1;i<actuals.length;i++) if (actuals[i].count < actuals[i-1].count) messages.push(`${minutesToTime(actuals[i].minute)}の累計実績が前時刻より減少しています。`);
-  rawActuals.forEach((row, index) => { if (row.source.time && row.minute !== null && !row.valid && row.count !== null) messages.push(`${index + 1}行目の実績時刻はピッキング開始から10分刻みで入力してください。`); });
+  const actualStart = timeToMinutes(state.settings.times.start);
+  rawActuals.forEach((row, index) => { if (row.source.time && row.minute !== null && actualStart !== null && (row.minute < actualStart || (row.minute - actualStart) % 10 !== 0)) messages.push(`${index + 1}行目の実績時刻はピッキング開始から10分刻みで入力してください。`); });
   const totals=getPickTotals(); if(totals.totalCount!==null) actuals.forEach(x=>{if(x.count>totals.totalCount*1.2) messages.push(`${minutesToTime(x.minute)}の実績が当日対象件数を20%以上超えています。`);});
   if(validNonNegative(state.dailyInput.outsourced)!==null&&totals.totalCount!==null&&Number(state.dailyInput.outsourced)>totals.totalCount) messages.push("外部委託件数が当日対象件数を超えています。");
   const start=timeToMinutes(state.settings.times.start),t10=timeToMinutes(state.settings.times.batch10),t13=timeToMinutes(state.settings.times.batch13),packet=timeToMinutes(state.settings.times.packetDeadline),parcel=timeToMinutes(state.settings.times.parcelDeadline),now=timeToMinutes(state.dailyInput.currentTime);
@@ -270,6 +301,15 @@ function renderValidationMessages() {
   const box=document.querySelector("#validation"); box.innerHTML=messages.length?`<strong>入力内容を確認してください</strong><ul>${[...new Set(messages)].map(m=>`<li>${m}</li>`).join("")}</ul>`:""; box.classList.toggle("show",messages.length>0);
 }
 function truncateAtFirstMissing(points) { const missing = points.findIndex(point => point.count === null); return points.slice(0, missing < 0 ? points.length : missing); }
+function appendActualRow() {
+  if (state.actuals.some(row => !row.time || row.totalCompleted === "" || row.totalCompleted === null || row.totalCompleted === undefined)) return false;
+  const actuals = calculateActualProgress();
+  if (actuals.some(row => !row.valid)) return false;
+  const lastMinute = actuals.at(-1)?.minute, nextMinute = lastMinute === undefined ? timeToMinutes(state.settings.times.start) : lastMinute + 10;
+  if (nextMinute === null || nextMinute >= 1440) return false;
+  state.actuals.push({time:minutesToTime(nextMinute),totalCompleted:"",breakdown:null});
+  return true;
+}
 function renderChart(ideal, actual) {
   const canvas=document.querySelector("#progress-chart"), dpr=window.devicePixelRatio||1, width=canvas.clientWidth||1100, height=340; canvas.width=width*dpr; canvas.height=height*dpr; const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr); ctx.clearRect(0,0,width,height);
   const start=timeToMinutes(state.settings.times.start)||570, latestActual=Math.max(start,...actual.filter(p=>p.count!==null).map(p=>p.minute)), baseEnd=Math.max(timeToMinutes(state.settings.times.alert)||840,timeToMinutes(state.dailyInput.currentTime)||start,latestActual),end=Math.max(start+30,baseEnd+10); const valid=[...ideal.map(x=>x.count),...actual.map(x=>x.count)].filter(isFiniteNumber); const max=Math.max(100,...valid)*1.1; const pad={l:62,r:18,t:22,b:42},x=m=>pad.l+(m-start)/(end-start)*(width-pad.l-pad.r),y=v=>height-pad.b-v/max*(height-pad.t-pad.b);
@@ -281,7 +321,7 @@ function renderChart(ideal, actual) {
 function renderAll(){renderSummary();renderPickTable();renderPackingDetail();renderSettings();renderValidationMessages();bindDynamicInputs();}
 function bindDynamicInputs(){document.querySelectorAll("[data-path]").forEach(el=>el.addEventListener("change",()=>{setPath(el.dataset.path,el.value);saveState();renderAll()}));document.querySelectorAll("[data-actual]").forEach(el=>el.addEventListener("change",()=>{const [i,k]=el.dataset.actual.split(".");state.actuals[Number(i)][k]=el.value;saveState();renderAll()}));document.querySelectorAll("[data-remove-actual]").forEach(el=>el.addEventListener("click",()=>{state.actuals.splice(Number(el.dataset.removeActual),1);saveState();renderAll()}));}
 document.querySelectorAll(".tab").forEach(tab=>tab.addEventListener("click",()=>{document.querySelectorAll(".tab,.panel").forEach(x=>x.classList.remove("active"));tab.classList.add("active");document.querySelector(`#${tab.dataset.tab}`).classList.add("active");if(tab.dataset.tab==="summary")renderSummary()}));
-document.querySelector("#add-actual").addEventListener("click",()=>{const last=state.actuals.at(-1)?.time;const minute=last ? timeToMinutes(last)+10 : timeToMinutes(state.settings.times.start);state.actuals.push({time:minutesToTime(minute),totalCompleted:"",breakdown:null});saveState();renderAll()});
+document.querySelector("#add-actual").addEventListener("click",()=>{if(appendActualRow())saveState();renderAll()});
 document.querySelector("#clear-daily").addEventListener("click",resetDailyData); document.querySelector("#reset-all").addEventListener("click",resetAll); window.addEventListener("resize",()=>renderSummary());
 if(state.updatedAt) document.querySelector("#saved-at").textContent=new Date(state.updatedAt).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 renderAll();

@@ -61,7 +61,7 @@
         <div class="card"><div class="card-title"><div><span class="tag input">当日入力</span><h3>当日条件</h3></div></div><div id="daily-fields" class="form-grid"></div></div>
         <div class="card"><div class="card-title"><div><span class="tag standard">標準値</span><h3>時刻・判定設定</h3></div></div><div id="time-fields" class="form-grid"></div></div>
       </div>
-      <div class="card table-card"><div class="card-title"><div><span class="tag actual-tag">実績値</span><h3>時刻別累計実績（10分単位）</h3></div><button id="add-actual" class="btn primary">＋ 行を追加</button></div><div class="table-scroll"><table><thead><tr><th>時刻</th><th>累計実績件数</th><th></th></tr></thead><tbody id="actual-table-body"></tbody></table></div><p class="footnote">空欄は0ではなく未入力として扱い、最初の空欄以降はグラフを描画しません。工程別内訳はPhase 2で対応予定です。</p></div>
+      <div class="card table-card"><div class="card-title"><div><span class="tag actual-tag">実績値</span><h3>時刻別累計実績（10分単位）</h3></div><button id="add-actual" class="btn primary">＋ 行を追加</button></div><div class="table-scroll"><table><thead><tr><th>時刻</th><th>累計実績件数</th><th></th></tr></thead><tbody id="actual-table-body"></tbody></table></div><p class="footnote">ピッキング開始時刻を基準に10分単位で入力してください。空欄は0ではなく未入力として扱い、最初の空欄以降はグラフを描画しません。工程別内訳はPhase 2で対応予定です。</p></div>
       <div class="card table-card"><div class="card-title"><div><span class="tag standard">標準値</span><h3>マスター値</h3></div></div><div class="table-scroll"><table><thead><tr><th>区分</th><th>名称</th><th>生産性／能力</th><th>人数</th><th>受領シェア</th><th>備考</th></tr></thead><tbody id="master-table-body"></tbody></table></div></div>
     </section>
   </main>
