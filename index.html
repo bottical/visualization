@@ -31,6 +31,9 @@
         <div class="card-title"><div><span class="tag calc">計算値</span><h3>現在の人員状況</h3></div></div>
         <div id="staffing-summary" class="staffing-summary"></div>
         <p class="staffing-note">梱包開始期限を迎えたラインの必要人数を共通投入可能総人員から控除しています</p>
+        <div class="allocation-heading"><div><h4>ピッキング目安配分</h4><span>標準作業量比による目安</span></div></div>
+        <div id="picking-staff-allocation" aria-live="polite"></div>
+        <p class="allocation-note">現在時刻までに対象となった作業の標準作業量比率から按分した目安です。工程別実績は未反映です。</p>
       </div>
       <div class="card chart-card">
         <div class="card-title"><div><span class="tag calc">計算値</span><h3>理想／実績進捗</h3></div><div class="legend"><span><i class="ideal"></i>理想進捗</span><span><i class="actual"></i>実績進捗</span><span><i class="packing-marker"></i>梱包 開始リミット</span><span><i class="finish-marker"></i>ピッキング終了見込み</span><span><i class="current-marker"></i>現在時刻</span></div></div>
