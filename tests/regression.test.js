@@ -19,6 +19,41 @@ vm.runInContext(`${source}
 function assertNear(actual, expected, tolerance, label) {
   if (!Number.isFinite(actual) || Math.abs(actual - expected) > tolerance) throw new Error(label + ": " + actual);
 }
+if (timeToMinutes("13:40") !== 820 || timeToMinutes("13:40:21") !== 820) throw new Error("時刻の分変換");
+if (normalizeTimeValue("13:40:21") !== "13:40") throw new Error("時刻の正規化");
+const migrated = mergeState({version:1,dailyInput:{currentTime:"13:40:21"},settings:{times:{start:"09:30:12"}},actuals:[]});
+if (migrated.dailyInput.currentTime !== "13:40" || migrated.settings.times.start !== "09:30") throw new Error("旧保存値の移行");
+state.settings.times.start = "09:30";
+state.dailyInput.currentTime = "13:40";
+if (getTimeValidationMessages().length) throw new Error("有効な現在時刻");
+state.dailyInput.currentTime = "13:45";
+if (!getTimeValidationMessages().some(message => message.includes("10分刻み"))) throw new Error("現在時刻の刻み検証");
+state.dailyInput.currentTime = "13:40";
+state.actuals = [{time:"10:30",totalCompleted:1},{time:"10:40",totalCompleted:2},{time:"10:50",totalCompleted:3}];
+if (getTimeValidationMessages().length || calculateActualProgress().some(row => !row.valid)) throw new Error("有効な実績時刻列");
+state.actuals = [{time:"10:30",totalCompleted:1},{time:"10:35",totalCompleted:2}];
+if (calculateActualProgress()[1].valid) throw new Error("実績時刻の刻み検証");
+state.actuals = [{time:"10:30",totalCompleted:1},{time:"10:20",totalCompleted:2}];
+if (!getTimeValidationMessages().some(message => message.includes("前行より後"))) throw new Error("実績時刻の逆転検証");
+state.actuals = [{time:"10:30",totalCompleted:1},{time:"10:30",totalCompleted:2}];
+if (!getTimeValidationMessages().includes("同一時刻の実績が重複しています。")) throw new Error("実績時刻の重複検証");
+state.settings.times.start = "09:30";
+let options = buildTenMinuteTimeOptions();
+if (!["09:30","09:40","09:50","10:00"].every(time => options.includes('value="' + time + '"')) || options.includes('value="09:35"')) throw new Error("09:30基準の選択肢");
+state.settings.times.start = "09:35";
+options = buildTenMinuteTimeOptions();
+if (!["09:35","09:45","09:55"].every(time => options.includes('value="' + time + '"')) || options.includes('value="09:40"')) throw new Error("09:35基準の選択肢");
+options = buildTenMinuteTimeOptions("13:40");
+if (!options.includes('<option value="13:40" selected disabled>13:40（10分刻み不一致）</option>')) throw new Error("不一致時刻の選択表示");
+options = buildTenMinuteTimeOptions("13:45");
+if (!options.includes('<option value="13:45" selected>13:45</option>') || options.includes("13:45（10分刻み不一致）")) throw new Error("正常時刻の選択表示");
+state.settings.times.start = "09:30";
+state.actuals = [{time:"10:30",totalCompleted:1000},{time:"",totalCompleted:""}];
+if (appendActualRow() || state.actuals.length !== 2) throw new Error("未完成行の追加抑止");
+state.actuals = [{time:"10:30",totalCompleted:1000},{time:"10:35",totalCompleted:1200}];
+if (appendActualRow() || state.actuals.length !== 2) throw new Error("不正時刻行の追加抑止");
+state.actuals = [{time:"10:30",totalCompleted:1000},{time:"10:40",totalCompleted:1200}];
+if (!appendActualRow() || state.actuals.at(-1).time !== "10:50" || state.actuals.at(-1).totalCompleted !== "") throw new Error("有効な次行の追加");
 const excelFixture = {
   currentTime: "13:40",
   picks: {
