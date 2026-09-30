@@ -10,6 +10,7 @@ const context = {
   console,
   confirm: () => true,
   Date,
+  window: { devicePixelRatio: 1 },
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   document: { querySelector: () => ({ textContent: "" }), querySelectorAll: () => [] }
 };
@@ -99,8 +100,24 @@ state.actuals = clone(excelFixture.actuals);
 const packing = calculatePackingAllocation();
 const expectedCounts = [4145, 4726, 80, 1606, 843];
 packing.forEach((line, index) => { if (line.count !== expectedCounts[index]) throw new Error(line.name + "概算件数: " + line.count); });
-if (minutesToDeadlineTime(packing[1].latestStartMinutes) !== "10:16") throw new Error("レオ最新開始");
-if (minutesToDeadlineTime(packing[4].latestStartMinutes) !== "14:21") throw new Error("手梱包最新開始");
+const expectedLatestStarts = { gemini: "11:02", leo: "10:16", ravioli: "15:21", radish: "13:05", manual: "14:21" };
+packing.forEach(line => { if (minutesToDeadlineTime(line.latestStartMinutes) !== expectedLatestStarts[line.id]) throw new Error(line.name + "最新開始: " + minutesToDeadlineTime(line.latestStartMinutes)); });
+const chartRange = getChartTimeRange({ startMinute: timeToMinutes("09:30"), alertMinute: timeToMinutes("14:00"), currentMinute: timeToMinutes("13:40"), latestActualMinute: timeToMinutes("13:40"), finishMinute: timeToMinutes("14:33"), packing });
+if (chartRange.end <= timeToMinutes("15:21")) throw new Error("チャート終端が最終イベント以前: " + minutesToTime(chartRange.end));
+const zeroCountRange = getChartTimeRange({ startMinute: timeToMinutes("09:30"), alertMinute: timeToMinutes("14:00"), currentMinute: timeToMinutes("13:40"), latestActualMinute: timeToMinutes("13:40"), finishMinute: timeToMinutes("14:33"), packing: [...packing, { name: "0件対象外", count: 0, latestStartMinutes: timeToMinutes("20:00") }] });
+if (zeroCountRange.end !== chartRange.end) throw new Error("0件ラインがチャート終端を延長: " + minutesToTime(zeroCountRange.end));
+const activeLineRange = getChartTimeRange({ startMinute: timeToMinutes("09:30"), alertMinute: timeToMinutes("14:00"), currentMinute: timeToMinutes("13:40"), latestActualMinute: timeToMinutes("13:40"), finishMinute: timeToMinutes("14:33"), packing: [...packing, { name: "有効ライン", count: 1, latestStartMinutes: timeToMinutes("16:00") }] });
+if (activeLineRange.end <= timeToMinutes("16:00")) throw new Error("有効ラインを含むチャート終端: " + minutesToTime(activeLineRange.end));
+const markerPacking = [...packing, { name: "時刻なし対象外", count: 1, latestStartMinutes: null }, { name: "0件対象外", count: 0, latestStartMinutes: timeToMinutes("15:30") }];
+const chartMarkers = getChartMarkers({ currentMinute: timeToMinutes("13:40"), finishMinute: metrics.finish, packing: markerPacking });
+if (chartMarkers.filter(marker => marker.type === "packing").length !== 5 || chartMarkers.some(marker => marker.label.includes("対象外"))) throw new Error("0件またはnull最新開始を描画対象から除外");
+if (!chartMarkers.some(marker => marker.label === "ピッキング終了見込み 14:33") || !chartMarkers.some(marker => marker.label === "現在 13:40")) throw new Error("チャートイベント文言");
+if (!chartMarkers.find(marker => marker.label.startsWith("レオ ")).isPast || chartMarkers.find(marker => marker.label.startsWith("手梱包 ")).isPast) throw new Error("梱包開始期限の過去未来判定");
+const noop = () => {};
+const fakeContext = new Proxy({ measureText: text => ({ width: text.length * 6 }) }, { get: (target, key) => key in target ? target[key] : noop, set: (target, key, value) => { target[key] = value; return true; } });
+const originalQuerySelector = document.querySelector;
+document.querySelector = selector => selector === "#progress-chart" ? { clientWidth: 900, getContext: () => fakeContext } : originalQuerySelector(selector);
+renderChart(metrics.ideal, metrics.actual, { currentMinute: metrics.currentMinute, finishMinute: null, packing });
 const staffingSummary = calculateCurrentStaffingSummary();
 if (staffingSummary.totalPeople !== 40 || staffingSummary.packingPeople !== 18 || staffingSummary.pickingPeople !== 22 || staffingSummary.staffingStatus !== "充足") throw new Error("現在の人員状況");
 if (minutesToDeadlineTime(staffingSummary.nextPackingStart) !== "14:21") throw new Error("次の梱包開始");
