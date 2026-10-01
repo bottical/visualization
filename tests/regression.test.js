@@ -6,12 +6,17 @@ const vm = require("node:vm");
 let source = fs.readFileSync("app.js", "utf8");
 source = source.slice(0, source.indexOf('document.querySelectorAll(".tab")'));
 
+const storage = new Map();
 const context = {
   console,
   confirm: () => true,
   Date,
   window: { devicePixelRatio: 1 },
-  localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+  localStorage: {
+    getItem: key => storage.has(key) ? storage.get(key) : null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key)
+  },
   document: { querySelector: () => ({ textContent: "" }), querySelectorAll: () => [] }
 };
 vm.createContext(context);
@@ -20,6 +25,33 @@ vm.runInContext(`${source}
 function assertNear(actual, expected, tolerance, label) {
   if (!Number.isFinite(actual) || Math.abs(actual - expected) > tolerance) throw new Error(label + ": " + actual);
 }
+const expectedPresetPicks = {
+  total: { batch6: "3000", batch10: "2200", batch13: "300" },
+  gas: { batch6: "1400", batch10: "1100", batch13: "100" },
+  sas: { batch6: "1000", batch10: "800", batch13: "100" },
+  order: { batch6: "700", batch10: "600", batch13: "100" }
+};
+const preset = initialPresetState();
+if (JSON.stringify(loadState()) !== JSON.stringify(preset)) throw new Error("保存データなしの初期Preset読込");
+if (preset.dailyInput.currentTime !== "13:40" || preset.dailyInput.manualPeople !== "8" || preset.dailyInput.bufferMinutes !== "30" || preset.dailyInput.outsourced !== "0") throw new Error("初期Presetの当日入力");
+if (JSON.stringify(preset.dailyInput.staffing) !== JSON.stringify({ before10: "40", before13: "40", after13: "40" })) throw new Error("初期Presetの人数");
+if (JSON.stringify(preset.dailyInput.picks) !== JSON.stringify(expectedPresetPicks)) throw new Error("初期Presetのピック件数");
+if (preset.actuals.length !== 0) throw new Error("初期Presetに実績が混入");
+const emptyDefault = defaultState();
+if (emptyDefault.dailyInput.currentTime !== "" || Object.values(emptyDefault.dailyInput.staffing).some(Boolean) || PICK_KEYS.some(key => Object.values(emptyDefault.dailyInput.picks[key]).some(Boolean)) || emptyDefault.actuals.length !== 0) throw new Error("defaultStateの当日入力は空欄");
+const originalRenderAll = renderAll;
+renderAll = () => {};
+state = initialPresetState();
+resetDailyData();
+if (JSON.stringify(state.dailyInput) !== JSON.stringify(defaultState().dailyInput) || state.actuals.length !== 0) throw new Error("当日データクリアは空欄へ戻す");
+state = initialPresetState();
+resetAll();
+if (JSON.stringify(state.dailyInput) !== JSON.stringify(defaultState().dailyInput) || state.actuals.length !== 0) throw new Error("すべて初期化はdefaultStateへ戻す");
+if (JSON.stringify(loadState().dailyInput) !== JSON.stringify(defaultState().dailyInput)) throw new Error("すべて初期化後の再読込でPresetへ戻さない");
+localStorage.setItem(STORAGE_KEY, "invalid json");
+if (JSON.stringify(loadState()) !== JSON.stringify(defaultState())) throw new Error("保存データ解析エラーはdefaultStateへ戻す");
+localStorage.removeItem(STORAGE_KEY);
+renderAll = originalRenderAll;
 if (timeToMinutes("13:40") !== 820 || timeToMinutes("13:40:21") !== 820) throw new Error("時刻の分変換");
 if (normalizeTimeValue("13:40:21") !== "13:40") throw new Error("時刻の正規化");
 const migrated = mergeState({version:1,dailyInput:{currentTime:"13:40:21"},settings:{times:{start:"09:30:12"}},actuals:[]});

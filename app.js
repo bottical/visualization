@@ -21,6 +21,26 @@ function emptyPicks() { return Object.fromEntries(PICK_KEYS.map(k => [k, { batch
 function defaultState() {
   return { version: 1, settings: clone(MASTER_DEFAULTS), dailyInput: { picks: emptyPicks(), staffing: { before10: "", before13: "", after13: "" }, currentTime: "", outsourced: "", bufferMinutes: "", manualPeople: "" }, actuals: [], updatedAt: "" };
 }
+function initialPresetState() {
+  const base = defaultState();
+  // Initial explanatory preset. These values are provisional defaults for
+  // faster demo input, not confirmed historical averages.
+  base.dailyInput = {
+    currentTime: "13:40",
+    outsourced: "0",
+    bufferMinutes: "30",
+    manualPeople: "8",
+    staffing: { before10: "40", before13: "40", after13: "40" },
+    picks: {
+      total: { batch6: "3000", batch10: "2200", batch13: "300" },
+      gas: { batch6: "1400", batch10: "1100", batch13: "100" },
+      sas: { batch6: "1000", batch10: "800", batch13: "100" },
+      order: { batch6: "700", batch10: "600", batch13: "100" }
+    }
+  };
+  base.actuals = [];
+  return base;
+}
 function normalizeTimeValue(value) {
   if (typeof value !== "string") return "";
   const match = value.match(/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/);
@@ -39,7 +59,7 @@ function mergeState(raw) {
   Object.keys(merged.settings.times).forEach(key => { merged.settings.times[key] = normalizeTimeValue(merged.settings.times[key]); });
   return merged;
 }
-function loadState() { try { return mergeState(JSON.parse(localStorage.getItem(STORAGE_KEY))); } catch (_) { return defaultState(); } }
+function loadState() { try { const saved = localStorage.getItem(STORAGE_KEY); return saved === null ? initialPresetState() : mergeState(JSON.parse(saved)); } catch (_) { return defaultState(); } }
 let state = loadState();
 function normalizeStateTimes() { state.dailyInput.currentTime = normalizeTimeValue(state.dailyInput.currentTime); Object.keys(state.settings.times).forEach(key => { state.settings.times[key] = normalizeTimeValue(state.settings.times[key]); }); state.actuals.forEach(row => { row.time = normalizeTimeValue(row.time); }); }
 function saveState() { normalizeStateTimes(); state.updatedAt = new Date().toISOString(); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* storage unavailable: UI remains usable */ } document.querySelector("#saved-at").textContent = new Date(state.updatedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
