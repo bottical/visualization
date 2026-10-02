@@ -147,6 +147,42 @@ if (!chartMarkers.some(marker => marker.label === "ピッキング終了見込�
 if (!chartMarkers.find(marker => marker.label.startsWith("レオ ")).isPast || chartMarkers.find(marker => marker.label.startsWith("手梱包 ")).isPast) throw new Error("梱包開始期限の過去未来判定");
 const noop = () => {};
 const fakeContext = new Proxy({ measureText: text => ({ width: text.length * 6 }) }, { get: (target, key) => key in target ? target[key] : noop, set: (target, key, value) => { target[key] = value; return true; } });
+const labelRectanglesOverlap = (a, b, gap = 6) => a.left < b.right + gap && a.right + gap > b.left && a.top < b.bottom + gap && a.bottom + gap > b.top;
+const assertNoLabelOverlap = (layout, label) => {
+  for (let i = 0; i < layout.length; i++) for (let j = i + 1; j < layout.length; j++) {
+    if (labelRectanglesOverlap(layout[i].rect, layout[j].rect)) throw new Error(label + ": " + layout[i].marker.label + " / " + layout[j].marker.label);
+  }
+};
+const layoutMarkers = (markers, width, positions) => calculateMarkerLabelLayout(fakeContext, markers, marker => positions[marker.label], 62, width - 18);
+const separated = [{ type: "packing", label: "梱包A" }, { type: "packing", label: "梱包B" }];
+const separatedLayout = layoutMarkers(separated, 900, { "梱包A": 100, "梱包B": 300 });
+if (separatedLayout.some(item => item.lane !== 0)) throw new Error("十分離れたラベルを同一レーンに配置");
+const overlappingLayout = layoutMarkers(separated, 900, { "梱包A": 100, "梱包B": 110 });
+if (overlappingLayout[0].lane === overlappingLayout[1].lane) throw new Error("重なるラベルを別レーンに配置");
+const crowdedMarkers = Array.from({ length: 7 }, (_, index) => ({ type: "packing", label: "密集ラベル" + index }));
+const crowdedLayout = calculateMarkerLabelLayout(fakeContext, crowdedMarkers, () => 200, 62, 357);
+assertNoLabelOverlap(crowdedLayout, "5レーンを超える密集配置の衝突");
+if (Math.max(...crowdedLayout.map(item => item.lane)) !== crowdedMarkers.length - 1) throw new Error("必要数までレーンを動的追加");
+const mixedMarkers = [{ type: "packing", label: "手梱包 14:21" }, { type: "finish", label: "ピッキング終了見込み 14:33" }, { type: "current", label: "現在 13:40" }];
+const mixedLayout = layoutMarkers(mixedMarkers, 900, { "手梱包 14:21": 420, "ピッキング終了見込み 14:33": 430, "現在 13:40": 410 });
+assertNoLabelOverlap(mixedLayout, "マーカー種別間の衝突");
+if (mixedLayout.find(item => item.marker.type === "current").lane !== 0 || mixedLayout.find(item => item.marker.type === "finish").lane !== 1) throw new Error("マーカー表示優先度");
+const edgeMarkers = [{ type: "packing", label: "右端の長いラベル" }, { type: "packing", label: "内側ラベル" }];
+const edgeLayout = layoutMarkers(edgeMarkers, 600, { "右端の長いラベル": 575, "内側ラベル": 500 });
+if (edgeLayout.find(item => item.marker.label === "右端の長いラベル").labelX >= 575 || edgeLayout[0].lane === edgeLayout[1].lane) throw new Error("右端反転後の矩形による衝突判定");
+const demoMarkers = [
+  { type: "packing", label: "レオ 開始リミット 10:16", minute: 616 },
+  { type: "packing", label: "ジェミニ 開始リミット 11:02", minute: 662 },
+  { type: "packing", label: "ラディッシュ 開始リミット 13:05", minute: 785 },
+  { type: "current", label: "現在 13:40", minute: 820 },
+  { type: "packing", label: "手梱包 開始リミット 14:21", minute: 861 },
+  { type: "finish", label: "ピッキング終了見込み 14:33", minute: 873 },
+  { type: "packing", label: "ラビオリ 開始リミット 15:21", minute: 921 }
+];
+for (const width of [900, 600, 375]) {
+  const x = marker => 62 + (marker.minute - 570) / (936 - 570) * (width - 80);
+  assertNoLabelOverlap(calculateMarkerLabelLayout(fakeContext, demoMarkers, x, 62, width - 18), width + "pxデモ配置の衝突");
+}
 const originalQuerySelector = document.querySelector;
 document.querySelector = selector => selector === "#progress-chart" ? { clientWidth: 900, getContext: () => fakeContext } : originalQuerySelector(selector);
 renderChart(metrics.ideal, metrics.actual, { currentMinute: metrics.currentMinute, finishMinute: null, packing });

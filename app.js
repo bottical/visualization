@@ -377,22 +377,49 @@ function getChartTimeRange({ startMinute, alertMinute, currentMinute, latestActu
   const lastEvent = Math.max(start + 15, ...candidates);
   return { start, end: Math.min(limit, Math.max(start + 30, lastEvent + 15)) };
 }
-function drawMarkerLabel(ctx, marker, markerX, labelY, left, right) {
-  ctx.font = marker.type === "finish" ? "bold 11px sans-serif" : "11px sans-serif";
-  const textWidth = ctx.measureText(marker.label).width, boxWidth = textWidth + 8;
+function markerLabelFont(marker) { return marker.type === "finish" ? "bold 11px sans-serif" : "11px sans-serif"; }
+function markerLabelPosition(ctx, marker, markerX, left, right) {
+  ctx.font = markerLabelFont(marker);
+  const boxWidth = ctx.measureText(marker.label).width + 8;
   let labelX = markerX + 5;
   if (labelX + boxWidth > right) labelX = markerX - boxWidth - 5;
-  labelX = Math.max(left, Math.min(labelX, right - boxWidth));
+  return { labelX: Math.max(left, Math.min(labelX, right - boxWidth)), boxWidth };
+}
+function calculateMarkerLabelLayout(ctx, markers, markerX, left, right, options = {}) {
+  const laneGap = options.laneGap ?? 6;
+  const firstLabelY = options.firstLabelY || 18, laneHeight = options.laneHeight || 21;
+  const priority = { current: 0, finish: 1, packing: 2 };
+  const placed = [], laneRects = [];
+  [...markers].sort((a, b) => (priority[a.type] ?? 3) - (priority[b.type] ?? 3) || markerX(a) - markerX(b)).forEach(marker => {
+    const x = markerX(marker), { labelX, boxWidth } = markerLabelPosition(ctx, marker, x, left, right);
+    let selectedLane = 0, rect;
+    while (true) {
+      if (!laneRects[selectedLane]) laneRects[selectedLane] = [];
+      const lane = selectedLane;
+      const labelY = firstLabelY + lane * laneHeight;
+      const candidate = { left: labelX, right: labelX + boxWidth, top: labelY - 11, bottom: labelY + 4 };
+      const overlaps = laneRects[lane].some(existing => candidate.left < existing.right + laneGap && candidate.right + laneGap > existing.left && candidate.top < existing.bottom + laneGap && candidate.bottom + laneGap > existing.top);
+      if (!overlaps) { rect = candidate; break; }
+      selectedLane += 1;
+    }
+    laneRects[selectedLane].push(rect);
+    placed.push({ marker, markerX: x, labelX, labelY: firstLabelY + selectedLane * laneHeight, lane: selectedLane, rect });
+  });
+  return placed;
+}
+function drawMarkerLabel(ctx, marker, labelX, labelY) {
+  ctx.font = markerLabelFont(marker);
+  const textWidth = ctx.measureText(marker.label).width, boxWidth = textWidth + 8;
   ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.fillRect(labelX, labelY - 11, boxWidth, 15);
   ctx.fillStyle = marker.type === "current" ? "#667789" : marker.type === "finish" ? "#18354d" : marker.isPast ? "#7a6950" : "#765900";
   ctx.fillText(marker.label, labelX + 4, labelY);
 }
-function drawVerticalMarker(ctx, marker, markerX, top, bottom, labelY, left, right) {
+function drawVerticalMarker(ctx, marker, markerX, top, bottom, labelX, labelY) {
   ctx.save(); ctx.beginPath(); ctx.moveTo(markerX, top); ctx.lineTo(markerX, bottom);
   if (marker.type === "packing") { ctx.strokeStyle = marker.isPast ? "#a9a39a" : "#b39600"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); }
   else if (marker.type === "finish") { ctx.strokeStyle = "#18354d"; ctx.lineWidth = 2.5; ctx.setLineDash([]); }
   else { ctx.strokeStyle = "#8b98a3"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]); }
-  ctx.stroke(); ctx.restore(); drawMarkerLabel(ctx, marker, markerX, labelY, left, right);
+  ctx.stroke(); ctx.restore(); drawMarkerLabel(ctx, marker, labelX, labelY);
 }
 function appendActualRow() {
   if (state.actuals.some(row => !row.time || row.totalCompleted === "" || row.totalCompleted === null || row.totalCompleted === undefined)) return false;
@@ -406,11 +433,12 @@ function appendActualRow() {
 function renderChart(ideal, actual, chartData = {}) {
   const canvas=document.querySelector("#progress-chart"), dpr=window.devicePixelRatio||1, width=canvas.clientWidth||1100, height=340; canvas.width=width*dpr; canvas.height=height*dpr; const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr); ctx.clearRect(0,0,width,height);
   const configuredStart=timeToMinutes(state.settings.times.start), latestActual=Math.max(isFiniteNumber(configuredStart)?configuredStart:570,...actual.filter(p=>p.count!==null&&isFiniteNumber(p.minute)).map(p=>p.minute));
-  const {start,end}=getChartTimeRange({startMinute:configuredStart,alertMinute:timeToMinutes(state.settings.times.alert),currentMinute:chartData.currentMinute,latestActualMinute:latestActual,finishMinute:chartData.finishMinute,packing:chartData.packing}); const valid=[...ideal.map(x=>x.count),...actual.map(x=>x.count)].filter(isFiniteNumber); const max=Math.max(100,...valid)*1.1; const pad={l:62,r:18,t:82,b:42},x=m=>pad.l+(m-start)/(end-start)*(width-pad.l-pad.r),y=v=>height-pad.b-v/max*(height-pad.t-pad.b);
+  const {start,end}=getChartTimeRange({startMinute:configuredStart,alertMinute:timeToMinutes(state.settings.times.alert),currentMinute:chartData.currentMinute,latestActualMinute:latestActual,finishMinute:chartData.finishMinute,packing:chartData.packing}); const valid=[...ideal.map(x=>x.count),...actual.map(x=>x.count)].filter(isFiniteNumber); const max=Math.max(100,...valid)*1.1; const pad={l:62,r:18,t:82,b:42},x=m=>pad.l+(m-start)/(end-start)*(width-pad.l-pad.r);
+  const markers=getChartMarkers(chartData).filter(marker=>marker.minute>=start&&marker.minute<=end), markerLayout=calculateMarkerLabelLayout(ctx,markers,marker=>x(marker.minute),pad.l,width-pad.r);
+  const usedLanes=markerLayout.length?Math.max(...markerLayout.map(item=>item.lane))+1:0; pad.t=Math.max(pad.t,usedLanes?18+(usedLanes-1)*21+19:0); const y=v=>height-pad.b-v/max*(height-pad.t-pad.b);
   ctx.font="11px sans-serif"; ctx.fillStyle="#71808d"; ctx.strokeStyle="#e2e7eb"; for(let i=0;i<=4;i++){const val=max*i/4,yy=y(val);ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(width-pad.r,yy);ctx.stroke();ctx.fillText(formatNumber(val),8,yy+4)}
   [start,timeToMinutes(state.settings.times.batch10),timeToMinutes(state.settings.times.batch13),timeToMinutes(state.settings.times.alert),end].filter(isFiniteNumber).forEach(m=>{ctx.fillText(minutesToTime(m),x(m)-16,height-15)});
-  const markers=getChartMarkers(chartData).filter(marker=>marker.minute>=start&&marker.minute<=end).sort((a,b)=>a.minute-b.minute), laneLastX=[-Infinity,-Infinity,-Infinity];
-  markers.forEach(marker=>{let lane=0;if(marker.type==="packing"){lane=laneLastX.findIndex(last=>x(marker.minute)-last>=145);if(lane<0)lane=laneLastX.indexOf(Math.min(...laneLastX));laneLastX[lane]=x(marker.minute)}else lane=marker.type==="finish"?2:1;drawVerticalMarker(ctx,marker,x(marker.minute),pad.t-8,height-pad.b,18+lane*20,pad.l,width-pad.r)});
+  markerLayout.forEach(item=>drawVerticalMarker(ctx,item.marker,item.markerX,pad.t-8,height-pad.b,item.labelX,item.labelY));
   function line(points,color,stopAtMissing=false){const selected=points.filter(p=>p.minute>=start&&p.minute<=end), usable=stopAtMissing?truncateAtFirstMissing(selected):selected.filter(p=>p.count!==null);if(!usable.length)return;ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=3;usable.forEach((p,i)=>i?ctx.lineTo(x(p.minute),y(p.count)):ctx.moveTo(x(p.minute),y(p.count)));ctx.stroke()}
   line(ideal,"#2878bd"); line(actual,"#f47b20",true); if(!ideal.length){ctx.fillStyle="#667789";ctx.font="bold 15px sans-serif";ctx.textAlign="center";ctx.fillText("件数と時間帯別投入人数を入力すると理想進捗を表示します",width/2,height/2);ctx.textAlign="start"}
 }
