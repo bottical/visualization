@@ -64,7 +64,7 @@ let state = loadState();
 function normalizeStateTimes() { state.dailyInput.currentTime = normalizeTimeValue(state.dailyInput.currentTime); Object.keys(state.settings.times).forEach(key => { state.settings.times[key] = normalizeTimeValue(state.settings.times[key]); }); state.actuals.forEach(row => { row.time = normalizeTimeValue(row.time); }); }
 function saveState() { normalizeStateTimes(); state.updatedAt = new Date().toISOString(); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* storage unavailable: UI remains usable */ } document.querySelector("#saved-at").textContent = new Date(state.updatedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
 function resetDailyData() { if (!confirm("当日の件数・人数・実績をクリアします。マスター値は維持されます。よろしいですか？")) return; state.dailyInput = defaultState().dailyInput; state.actuals = []; saveState(); renderAll(); }
-function resetAll() { if (!confirm("保存内容をすべて削除し、標準マスターへ戻します。よろしいですか？")) return; localStorage.removeItem(STORAGE_KEY); state = defaultState(); saveState(); renderAll(); }
+function resetAll() { if (!confirm("保存内容をすべて削除し、標準マスターへ戻します。よろしいですか？")) return; localStorage.removeItem(STORAGE_KEY); state = initialPresetState(); saveState(); renderAll(); }
 
 const valueOrNull = v => v === "" || v === null || v === undefined ? null : Number(v);
 const validNonNegative = v => { const n = valueOrNull(v); return Number.isFinite(n) && n >= 0 ? n : null; };
