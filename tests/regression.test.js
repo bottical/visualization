@@ -34,19 +34,23 @@ const expectedPresetPicks = {
 const preset = initialPresetState();
 if (JSON.stringify(loadState()) !== JSON.stringify(preset)) throw new Error("保存データなしの初期Preset読込");
 if (preset.dailyInput.currentTime !== "13:40" || preset.dailyInput.manualPeople !== "8" || preset.dailyInput.bufferMinutes !== "30" || preset.dailyInput.outsourced !== "0") throw new Error("初期Presetの当日入力");
+if (preset.dailyInput.autoCurrentTime !== false) throw new Error("初期Presetの時刻自動反映はOFF");
 if (JSON.stringify(preset.dailyInput.staffing) !== JSON.stringify({ before10: "40", before13: "40", after13: "40" })) throw new Error("初期Presetの人数");
 if (JSON.stringify(preset.dailyInput.picks) !== JSON.stringify(expectedPresetPicks)) throw new Error("初期Presetのピック件数");
 if (preset.actuals.length !== 0) throw new Error("初期Presetに実績が混入");
 const emptyDefault = defaultState();
 if (emptyDefault.dailyInput.currentTime !== "" || Object.values(emptyDefault.dailyInput.staffing).some(Boolean) || PICK_KEYS.some(key => Object.values(emptyDefault.dailyInput.picks[key]).some(Boolean)) || emptyDefault.actuals.length !== 0) throw new Error("defaultStateの当日入力は空欄");
+if (emptyDefault.dailyInput.autoCurrentTime !== false) throw new Error("defaultStateの時刻自動反映はOFF");
 const originalRenderAll = renderAll;
 renderAll = () => {};
 state = initialPresetState();
 resetDailyData();
 if (JSON.stringify(state.dailyInput) !== JSON.stringify(defaultState().dailyInput) || state.actuals.length !== 0) throw new Error("当日データクリアは空欄へ戻す");
+if (state.dailyInput.autoCurrentTime !== false || state.dailyInput.currentTime !== "" || state.actuals.length !== 0) throw new Error("当日データクリアで自動時刻と実績を解除");
 state = initialPresetState();
 resetAll();
 if (JSON.stringify(state.dailyInput) !== JSON.stringify(defaultState().dailyInput) || state.actuals.length !== 0) throw new Error("すべて初期化はdefaultStateへ戻す");
+if (state.dailyInput.autoCurrentTime !== false) throw new Error("すべて初期化で時刻自動反映をOFF");
 if (JSON.stringify(loadState().dailyInput) !== JSON.stringify(defaultState().dailyInput)) throw new Error("すべて初期化後の再読込でPresetへ戻さない");
 localStorage.setItem(STORAGE_KEY, "invalid json");
 if (JSON.stringify(loadState()) !== JSON.stringify(defaultState())) throw new Error("保存データ解析エラーはdefaultStateへ戻す");
@@ -56,6 +60,22 @@ if (timeToMinutes("13:40") !== 820 || timeToMinutes("13:40:21") !== 820) throw n
 if (normalizeTimeValue("13:40:21") !== "13:40") throw new Error("時刻の正規化");
 const migrated = mergeState({version:1,dailyInput:{currentTime:"13:40:21"},settings:{times:{start:"09:30:12"}},actuals:[]});
 if (migrated.dailyInput.currentTime !== "13:40" || migrated.settings.times.start !== "09:30") throw new Error("旧保存値の移行");
+if (migrated.dailyInput.autoCurrentTime !== false) throw new Error("旧保存値の時刻自動反映移行");
+if (getCurrentTenMinuteTime(new Date(2026, 0, 1, 15, 16)) !== "15:10") throw new Error("15:16を10分単位へ切り捨て");
+if (getCurrentTenMinuteTime(new Date(2026, 0, 1, 15, 29)) !== "15:20") throw new Error("15:29を10分単位へ切り捨て");
+if (getCurrentTenMinuteTime(new Date(2026, 0, 1, 15, 0)) !== "15:00") throw new Error("15:00を維持");
+renderAll = () => {};
+state = defaultState();
+state.dailyInput.currentTime = "14:30";
+if (syncCurrentTime(new Date(2026, 0, 1, 15, 16)) || state.dailyInput.currentTime !== "14:30") throw new Error("自動反映OFFでは現在時刻を変更しない");
+state.dailyInput.autoCurrentTime = true;
+state.dailyInput.currentTime = "15:10";
+if (syncCurrentTime(new Date(2026, 0, 1, 15, 19))) throw new Error("同一10分枠では再更新しない");
+if (!syncCurrentTime(new Date(2026, 0, 1, 15, 20)) || state.dailyInput.currentTime !== "15:20") throw new Error("10分枠変更時のみ更新");
+localStorage.setItem(STORAGE_KEY, JSON.stringify({...defaultState(), dailyInput:{...defaultState().dailyInput, currentTime:"14:30", autoCurrentTime:true}}));
+if (loadState(new Date(2026, 0, 1, 15, 17)).dailyInput.currentTime !== "15:10") throw new Error("自動反映ONの再読込時に現在時刻へ同期");
+localStorage.removeItem(STORAGE_KEY);
+renderAll = originalRenderAll;
 state.settings.times.start = "09:30";
 state.dailyInput.currentTime = "13:40";
 if (getTimeValidationMessages().length) throw new Error("有効な現在時刻");
@@ -81,12 +101,21 @@ if (!options.includes('<option value="13:40" selected disabled>13:40（10分刻�
 options = buildTenMinuteTimeOptions("13:45");
 if (!options.includes('<option value="13:45" selected>13:45</option>') || options.includes("13:45（10分刻み不一致）")) throw new Error("正常時刻の選択表示");
 state.settings.times.start = "09:30";
+state.dailyInput.autoCurrentTime = false;
 state.actuals = [{time:"10:30",totalCompleted:1000},{time:"",totalCompleted:""}];
 if (appendActualRow() || state.actuals.length !== 2) throw new Error("未完成行の追加抑止");
 state.actuals = [{time:"10:30",totalCompleted:1000},{time:"10:35",totalCompleted:1200}];
 if (appendActualRow() || state.actuals.length !== 2) throw new Error("不正時刻行の追加抑止");
 state.actuals = [{time:"10:30",totalCompleted:1000},{time:"10:40",totalCompleted:1200}];
 if (!appendActualRow() || state.actuals.at(-1).time !== "10:50" || state.actuals.at(-1).totalCompleted !== "") throw new Error("有効な次行の追加");
+state.dailyInput.autoCurrentTime = true;
+state.dailyInput.currentTime = "15:20";
+state.actuals = [];
+if (!appendActualRow() || state.actuals.at(-1).time !== "15:20") throw new Error("自動反映ON時は画面の現在時刻で実績を追加");
+if (appendActualRow() || state.actuals.length !== 1) throw new Error("自動反映ON時は同一時刻の実績を重複追加しない");
+state.dailyInput.autoCurrentTime = false;
+state.actuals = [{time:"10:30",totalCompleted:1000}];
+if (!appendActualRow() || state.actuals.at(-1).time !== "10:40") throw new Error("自動反映OFF時は最終実績の10分後を追加");
 const excelFixture = {
   currentTime: "13:40",
   picks: {

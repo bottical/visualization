@@ -19,7 +19,7 @@ const MASTER_DEFAULTS = Object.freeze({
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function emptyPicks() { return Object.fromEntries(PICK_KEYS.map(k => [k, { batch6: "", batch10: "", batch13: "" }])); }
 function defaultState() {
-  return { version: 1, settings: clone(MASTER_DEFAULTS), dailyInput: { picks: emptyPicks(), staffing: { before10: "", before13: "", after13: "" }, currentTime: "", outsourced: "", bufferMinutes: "", manualPeople: "" }, actuals: [], updatedAt: "" };
+  return { version: 1, settings: clone(MASTER_DEFAULTS), dailyInput: { picks: emptyPicks(), staffing: { before10: "", before13: "", after13: "" }, currentTime: "", autoCurrentTime: false, outsourced: "", bufferMinutes: "", manualPeople: "" }, actuals: [], updatedAt: "" };
 }
 function initialPresetState() {
   const base = defaultState();
@@ -27,6 +27,7 @@ function initialPresetState() {
   // faster demo input, not confirmed historical averages.
   base.dailyInput = {
     currentTime: "13:40",
+    autoCurrentTime: false,
     outsourced: "0",
     bufferMinutes: "30",
     manualPeople: "8",
@@ -59,12 +60,32 @@ function mergeState(raw) {
   Object.keys(merged.settings.times).forEach(key => { merged.settings.times[key] = normalizeTimeValue(merged.settings.times[key]); });
   return merged;
 }
-function loadState() { try { const saved = localStorage.getItem(STORAGE_KEY); return saved === null ? initialPresetState() : mergeState(JSON.parse(saved)); } catch (_) { return defaultState(); } }
+function getCurrentTenMinuteTime(now = new Date()) {
+  const minutes = Math.floor(now.getMinutes() / 10) * 10;
+  return `${String(now.getHours()).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+function loadState(now = new Date()) {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    const loaded = saved === null ? initialPresetState() : mergeState(JSON.parse(saved));
+    if (loaded.dailyInput.autoCurrentTime === true) loaded.dailyInput.currentTime = getCurrentTenMinuteTime(now);
+    return loaded;
+  } catch (_) { return defaultState(); }
+}
 let state = loadState();
 function normalizeStateTimes() { state.dailyInput.currentTime = normalizeTimeValue(state.dailyInput.currentTime); Object.keys(state.settings.times).forEach(key => { state.settings.times[key] = normalizeTimeValue(state.settings.times[key]); }); state.actuals.forEach(row => { row.time = normalizeTimeValue(row.time); }); }
 function saveState() { normalizeStateTimes(); state.updatedAt = new Date().toISOString(); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* storage unavailable: UI remains usable */ } document.querySelector("#saved-at").textContent = new Date(state.updatedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+function syncCurrentTime(now = new Date()) {
+  if (state.dailyInput.autoCurrentTime !== true) return false;
+  const currentTime = getCurrentTenMinuteTime(now);
+  if (state.dailyInput.currentTime === currentTime) return false;
+  state.dailyInput.currentTime = currentTime;
+  saveState();
+  renderAll();
+  return true;
+}
 function resetDailyData() { if (!confirm("当日の件数・人数・実績をクリアします。マスター値は維持されます。よろしいですか？")) return; state.dailyInput = defaultState().dailyInput; state.actuals = []; saveState(); renderAll(); }
-function resetAll() { if (!confirm("保存内容をすべて削除し、標準マスターへ戻します。よろしいですか？")) return; localStorage.removeItem(STORAGE_KEY); state = initialPresetState(); saveState(); renderAll(); }
+function resetAll() { if (!confirm("保存内容をすべて削除し、標準マスターへ戻します。よろしいですか？")) return; localStorage.removeItem(STORAGE_KEY); state = defaultState(); saveState(); renderAll(); }
 
 const valueOrNull = v => v === "" || v === null || v === undefined ? null : Number(v);
 const validNonNegative = v => { const n = valueOrNull(v); return Number.isFinite(n) && n >= 0 ? n : null; };
@@ -328,7 +349,7 @@ function renderPackingTable(selector, detail) {
 function renderPackingDetail() { renderPackingTable("#packing-detail-body", true); const outsourced = valueOrNull(state.dailyInput.outsourced); document.querySelector("#packing-notice").textContent = outsourced === null ? "外部委託件数が未入力のため、社内梱包対象件数と概算値は確定できません。" : "表示件数・開始リミット時刻は入力条件から算出した概算値です。確定実績ではありません。"; }
 function renderSettings() {
   const daily = [["現在時刻","currentTime","理想進捗・期限判定の基準（10分単位・秒入力不可）", "time"],["外部委託件数","outsourced","件"],["出荷前バッファ","bufferMinutes","分（当日設定）"],["手梱包当日投入人数","manualPeople","人（0～30）"],["09:30～10:00 投入可能総人数","staffing.before10","人"],["10:00～13:00 投入可能総人数","staffing.before13","人"],["13:00以降 投入可能総人数","staffing.after13","人"]];
-  document.querySelector("#daily-fields").innerHTML = daily.map(([label,key,note,type]) => { const path = `dailyInput.${key}`, val = key.includes(".") ? key.split(".").reduce((o,k)=>o[k],state.dailyInput) : state.dailyInput[key]; const control = type === "time" ? `<select data-path="${path}" aria-label="${label}">${buildTenMinuteTimeOptions(val)}</select>` : input(path,val,{min:0,max:key==="manualPeople"?30:undefined,step:1,label}); return `<div class="field"><label>${label}</label>${control}<small>${note}・空欄は未入力</small></div>`; }).join("");
+  document.querySelector("#daily-fields").innerHTML = daily.map(([label,key,note,type]) => { const path = `dailyInput.${key}`, val = key.includes(".") ? key.split(".").reduce((o,k)=>o[k],state.dailyInput) : state.dailyInput[key]; const control = type === "time" ? `<select data-path="${path}" aria-label="${label}"${state.dailyInput.autoCurrentTime ? " disabled" : ""}>${buildTenMinuteTimeOptions(val)}</select>` : input(path,val,{min:0,max:key==="manualPeople"?30:undefined,step:1,label}); return `<div class="field"><label>${label}</label>${control}<small>${note}・空欄は未入力</small></div>`; }).join("");
   const times = [["ピッキング開始","start"],["10時バッチ","batch10"],["13時バッチ","batch13"],["13時前主要作業目標（参考設定）","primaryGoal"],["ピッキング警戒ライン","alert"],["ゆうパケット締切","packetDeadline"],["ゆうパック等締切","parcelDeadline"]];
   document.querySelector("#time-fields").innerHTML = times.map(([label,key]) => `<div class="field"><label>${label}</label>${input(`settings.times.${key}`,state.settings.times[key],{type:"time",step:60,label})}</div>`).join("") + `<div class="field"><label>許容遅れ（分）</label>${input("settings.toleranceMinutes",state.settings.toleranceMinutes,{min:0,step:1})}</div><div class="field"><label>直近速度参照（分）</label>${input("settings.recentWindowMinutes",state.settings.recentWindowMinutes,{min:10,step:10})}</div>`;
   renderActualTable(); renderMasterTable();
@@ -422,6 +443,19 @@ function drawVerticalMarker(ctx, marker, markerX, top, bottom, labelX, labelY) {
   ctx.stroke(); ctx.restore(); drawMarkerLabel(ctx, marker, labelX, labelY);
 }
 function appendActualRow() {
+  if (state.dailyInput.autoCurrentTime === true) {
+    const time = state.dailyInput.currentTime;
+    if (!time) return false;
+    const existingIndex = state.actuals.findIndex(row => row.time === time);
+    if (existingIndex >= 0) {
+      document.querySelector(`[data-actual="${existingIndex}.totalCompleted"]`)?.focus?.();
+      return false;
+    }
+    if (state.actuals.some(row => !row.time || row.totalCompleted === "" || row.totalCompleted === null || row.totalCompleted === undefined)) return false;
+    if (calculateActualProgress().some(row => !row.valid)) return false;
+    state.actuals.push({time,totalCompleted:"",breakdown:null});
+    return true;
+  }
   if (state.actuals.some(row => !row.time || row.totalCompleted === "" || row.totalCompleted === null || row.totalCompleted === undefined)) return false;
   const actuals = calculateActualProgress();
   if (actuals.some(row => !row.valid)) return false;
@@ -442,10 +476,16 @@ function renderChart(ideal, actual, chartData = {}) {
   function line(points,color,stopAtMissing=false){const selected=points.filter(p=>p.minute>=start&&p.minute<=end), usable=stopAtMissing?truncateAtFirstMissing(selected):selected.filter(p=>p.count!==null);if(!usable.length)return;ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=3;usable.forEach((p,i)=>i?ctx.lineTo(x(p.minute),y(p.count)):ctx.moveTo(x(p.minute),y(p.count)));ctx.stroke()}
   line(ideal,"#2878bd"); line(actual,"#f47b20",true); if(!ideal.length){ctx.fillStyle="#667789";ctx.font="bold 15px sans-serif";ctx.textAlign="center";ctx.fillText("件数と時間帯別投入人数を入力すると理想進捗を表示します",width/2,height/2);ctx.textAlign="start"}
 }
-function renderAll(){renderSummary();renderPickTable();renderPackingDetail();renderSettings();renderValidationMessages();bindDynamicInputs();}
+function renderHeaderControls(){const checkbox=document.querySelector("#auto-current-time");checkbox.checked=state.dailyInput.autoCurrentTime===true;document.querySelector("#auto-current-time-status").textContent=state.dailyInput.autoCurrentTime?`現在 ${state.dailyInput.currentTime||"－"}`:"現在時刻 手動";}
+function renderAll(){renderHeaderControls();renderSummary();renderPickTable();renderPackingDetail();renderSettings();renderValidationMessages();bindDynamicInputs();}
 function bindDynamicInputs(){document.querySelectorAll("[data-path]").forEach(el=>el.addEventListener("change",()=>{setPath(el.dataset.path,el.value);saveState();renderAll()}));document.querySelectorAll("[data-actual]").forEach(el=>el.addEventListener("change",()=>{const [i,k]=el.dataset.actual.split(".");state.actuals[Number(i)][k]=el.value;saveState();renderAll()}));document.querySelectorAll("[data-remove-actual]").forEach(el=>el.addEventListener("click",()=>{state.actuals.splice(Number(el.dataset.removeActual),1);saveState();renderAll()}));}
 document.querySelectorAll(".tab").forEach(tab=>tab.addEventListener("click",()=>{document.querySelectorAll(".tab,.panel").forEach(x=>x.classList.remove("active"));tab.classList.add("active");document.querySelector(`#${tab.dataset.tab}`).classList.add("active");if(tab.dataset.tab==="summary")renderSummary()}));
-document.querySelector("#add-actual").addEventListener("click",()=>{if(appendActualRow())saveState();renderAll()});
+document.querySelector("#add-actual").addEventListener("click",()=>{if(appendActualRow()){saveState();renderAll();}});
+document.querySelector("#auto-current-time").addEventListener("change",event=>{state.dailyInput.autoCurrentTime=event.target.checked;if(event.target.checked)state.dailyInput.currentTime=getCurrentTenMinuteTime();saveState();renderAll();});
 document.querySelector("#clear-daily").addEventListener("click",resetDailyData); document.querySelector("#reset-all").addEventListener("click",resetAll); window.addEventListener("resize",()=>renderSummary());
+window.addEventListener("focus",()=>syncCurrentTime());
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)syncCurrentTime();});
+setInterval(()=>syncCurrentTime(),45000);
 if(state.updatedAt) document.querySelector("#saved-at").textContent=new Date(state.updatedAt).toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+if(state.dailyInput.autoCurrentTime) saveState();
 renderAll();
