@@ -293,6 +293,22 @@ function evaluatePlanFeasibility(model, required, feasible) {
   const failed = reasons.length > 0;
   return { status: model.assumptions.length ? "unknown" : failed ? "infeasible" : "feasible", scenarioStatus: failed ? "infeasible" : "feasible", reasons: [...new Set(reasons)], assumptions: model.assumptions, violations };
 }
+// Presentation keeps the scenario result separate from confirmation of inputs.
+// Neither the evaluator nor saved conditions are changed by this conversion.
+function getPlanPresentation(evaluation) {
+  const confirmed = evaluation.status !== "unknown" && evaluation.assumptions.length === 0;
+  const confirmation = confirmed ? "条件確認済み" : "未確定条件あり";
+  if (evaluation.scenarioStatus === "unknown") return {
+    title: "算出不可", result: "算出不可", confirmation, tone: "warn",
+    description: "必要な入力が不足または不正です。入力条件と能力の設定を確認してください。"
+  };
+  const possible = evaluation.scenarioStatus === "feasible";
+  const result = possible ? "概算：期限内完了可能" : "概算：期限内完了困難";
+  return { title: confirmed ? possible ? "計画成立（モデル上）" : "計画不成立" : result,
+    result, confirmation, tone: possible ? confirmed ? "good" : "warn" : "bad",
+    description: possible ? "現在の入力条件と標準仮定による試算では、対象の梱包完了期限に間に合う計画です。" : "現在の入力条件・人員・処理能力と配置方針では、対象の梱包完了期限に間に合わない見込みです。"
+  };
+}
 function calculatePackingPlan(input) {
   const model = calculatePackingDemand(input), required = calculateRequiredPickingProgress(model, input), feasible = calculateFeasiblePickingProgress(model, input);
   const history = model.plan.history;

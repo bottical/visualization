@@ -232,8 +232,9 @@ test("an attainable model does not display green plan readiness when actual pick
   const box = {};
   context.document.querySelector = selector => selector === "#plan-summary" ? box : original(selector);
   vm.runInContext("state = inputForTest; renderPlanSummary()", context);
-  assert.match(box.className, /bad/);
-  assert.match(box.innerHTML, /計画不成立：ピッキング実績/);
+  assert.match(box.className, /warn/);
+  assert.match(box.innerHTML, /計画成立（モデル上）/);
+  assert.match(box.innerHTML, /実績・稼働の確認：ピッキング実績/);
   context.document.querySelector = original;
 });
 
@@ -270,5 +271,57 @@ test("packing finish displays distinguish completion, deadline failure, missing 
     for (const result of [success, failure, unknown, empty]) {
       assert.doesNotMatch(result['#plan-summary'].innerHTML + result['#packing-detail-body'].innerHTML, /未達／算出不可/);
     }
+  } finally { context.document.querySelector = original; }
+});
+
+test("basic inputs calculate both estimate outcomes without confirming or modifying blank details", () => {
+  const input = fixture(); input.dailyInput.packingPlan = copy(context.defaultPackingPlan());
+  const original = copy(input);
+  const possible = calculate(input);
+  assert.ok(possible.required.length > 0);
+  assert.equal(possible.evaluation.status, "unknown");
+  assert.equal(context.getPlanPresentation(possible.evaluation).title, "概算：期限内完了可能");
+  assert.equal(context.getPlanPresentation(possible.evaluation).confirmation, "未確定条件あり");
+  assert.deepEqual(input, original);
+  input.settings.packing[0].capacity = 0;
+  assert.equal(context.getPlanPresentation(calculate(input).evaluation).title, "概算：期限内完了困難");
+  for (const mutate of [i => i.dailyInput.bufferMinutes = "", i => i.dailyInput.staffing.before10 = "bad", i => i.settings.packing[0].capacity = ""]) {
+    const missing = copy(original); mutate(missing);
+    assert.equal(context.getPlanPresentation(calculate(missing).evaluation).title, "算出不可");
+  }
+});
+
+test("confirmation labels follow explicit relevant conditions, and details override basic defaults", () => {
+  const input = fixture();
+  assert.equal(context.getPlanPresentation(calculate(input).evaluation).title, "計画成立（モデル上）");
+  input.settings.packing[0].capacity = 0;
+  assert.equal(context.getPlanPresentation(calculate(input).evaluation).title, "計画不成立");
+  const manual = fixture(); routeOnly(manual, "manual");
+  manual.dailyInput.manualPeople = "8";
+  manual.dailyInput.packingPlan.manualPeople.before10 = "0";
+  manual.dailyInput.packingPlan.lines.manual.initialWip = "100";
+  const result = calculate(manual);
+  assert.equal(result.feasible.points[0].count, 100);
+  assert.equal(result.feasible.points[0].packingPeople, 0);
+  assert.equal(result.model.jobs.every(j => j.lineId === "manual"), true);
+  assert.equal(manual.dailyInput.manualPeople, "8");
+});
+
+test("summary presents estimate outcome and confirmation separately, with assumptions in details", () => {
+  const original = context.document.querySelector;
+  const box = {};
+  context.document.querySelector = selector => selector === "#plan-summary" ? box : original(selector);
+  try {
+    const input = fixture(); input.dailyInput.packingPlan = copy(context.defaultPackingPlan());
+    context.inputForTest = input;
+    vm.runInContext("state = inputForTest; renderPlanSummary()", context);
+    assert.match(box.innerHTML, /<strong>概算：期限内完了可能<\/strong>/);
+    assert.match(box.innerHTML, /未確定条件あり/);
+    assert.match(box.innerHTML, /<details>.*初期仕掛未確定/s);
+    input.settings.packing[0].capacity = 0;
+    vm.runInContext("renderPlanSummary()", context);
+    assert.match(box.innerHTML, /<strong>概算：期限内完了困難<\/strong>/);
+    assert.match(box.innerHTML, /主な制約：/);
+    assert.match(box.innerHTML, /別の配置方法で解決できる可能性/);
   } finally { context.document.querySelector = original; }
 });

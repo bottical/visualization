@@ -353,26 +353,25 @@ function renderPackingDetail() { renderPackingTable("#packing-detail-body", true
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
 function renderPlanSummary() {
   const { model, evaluation } = getPackingPlan();
-  let displayStatus = evaluation.status;
-  let title = evaluation.status === "feasible" ? "計画成立：入力条件のモデル上、梱包期限内完了が可能" : evaluation.status === "infeasible" ? "計画不成立：現在の計画では期限内完了できません" : model.errors.length ? "判定不能：入力不足または不正な条件があります" : "要確認：未確定条件による概算判定です";
-  const scenario = model.errors.length ? "必要進捗を算出できません。入力条件を確認してください。" : evaluation.status === "unknown" ? `仮定に基づく概算試算：${evaluation.scenarioStatus === "feasible" ? "期限内処理可能" : "計画不成立"}。確定した成立判定ではありません。` : "";
-  const reasons = [...evaluation.reasons, ...evaluation.assumptions];
+  const presentation = getPlanPresentation(evaluation);
+  const reasons = [...evaluation.reasons];
+  const observations = [];
   const actual = getContiguousActuals().filter(row => row.minute <= model.current).at(-1);
   const requirement = getPackingPlan().displayed.find(point => point.minute === actual?.minute);
   if (requirement && actual.count + PLAN_EPSILON < requirement.count) {
-    reasons.unshift("ピッキング実績が必要進捗に未達です。梱包先別の実供給・仕掛・梱包実績を確認してください。");
-    displayStatus = evaluation.status === "unknown" ? "unknown" : "infeasible";
-    title = displayStatus === "unknown" ? "要確認：ピッキング実績が概算必要進捗に未達" : "計画不成立：ピッキング実績が必要進捗に未達（モデル上）";
+    observations.push("ピッキング実績が必要進捗に未達です。梱包先別の実供給・仕掛・梱包実績を確認してください。");
   }
   const lines = calculatePlannedPackingRows();
   const finishes = lines.filter(line => line.count > 0).map(line => line.finish);
   const finish = finishes.length && finishes.every(isFiniteNumber) ? Math.max(...finishes) : null;
   const finishStatus = model.errors.length ? "算出不可" : lines.every(line => line.count === 0) ? "対象なし" : lines.some(line => line.planStatus === "期限内未達") ? "期限内未達" : "計画内完了";
   const pastLatest = lines.some(line => line.count > 0 && line.latestStartMinutes !== null && model.current > line.latestStartMinutes);
-  if (pastLatest) reasons.push("開始リミットを過ぎたラインがあります。実稼働・梱包実績は未取得のため、実際の残処理量・完了は未確認です。");
+  if (pastLatest) observations.push("開始リミットを過ぎたラインがあります。実稼働・梱包実績は未取得のため、実際の残処理量・完了は未確認です。");
   const box = document.querySelector("#plan-summary");
-  box.className = `plan-summary ${displayStatus === "feasible" ? "good" : displayStatus === "infeasible" ? "bad" : "warn"}`;
-  box.innerHTML = `<strong>${title}</strong>${scenario ? `<p>${scenario}</p>` : ""}${reasons.length ? `<p>${escapeHtml(reasons[0])}</p><details><summary>判定根拠と未確定条件（${reasons.length}件）</summary><ul>${reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></details>` : ""}<p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish, finishStatus)}　｜　出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><small>計画開始時点から入力条件でシミュレーションした結果です。現時点のピッキング・梱包実績を反映した再予測ではありません。対象は到来済みバッチです（未来バッチは未反映）。理想線の達成だけで実際の完了を保証しません。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</small>`;
+  box.className = `plan-summary ${observations.length && presentation.tone === "good" ? "warn" : presentation.tone}`;
+  const details = [...reasons, ...evaluation.assumptions, ...observations];
+  const assumptions = evaluation.assumptions.length ? "梱包先別件数・初期仕掛・稼働時刻など、適用中の仮定は下の一覧で確認できます。詳細条件の確認により結果が変わる可能性があります。" : "必要な入力条件は確認済みです。";
+  box.innerHTML = `<strong>${presentation.title}</strong><p>${presentation.description}</p>${reasons.length ? `<p class="plan-constraint">主な制約：${escapeHtml(reasons[0])}</p>` : ""}<p class="plan-confirmation">${presentation.confirmation} — ${assumptions}</p>${details.length ? `<details><summary>判定根拠・適用中の仮定・実績の確認（${details.length}件）</summary><ul>${details.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul><p>稼働開始可能時刻の仮定は設備が早期稼働可能という意味です。人員や仕掛の確保を意味せず、人員・仕掛供給制約は引き続き適用します。</p></details>` : ""}${observations.length ? `<p class="plan-observation">実績・稼働の確認：${escapeHtml(observations[0])}</p>` : ""}<p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish, finishStatus)}　｜　出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><small>計画開始時点から入力条件でシミュレーションした結果です。現時点のピッキング・梱包実績を反映した再予測ではありません。対象は到来済みバッチです（未来バッチは未反映）。実際の梱包完了を保証しません。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。別の配置方法で解決できる可能性があります。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</small>`;
 }
 function calculatePlannedPackingRows() {
   const { model, feasible } = getPackingPlan();
