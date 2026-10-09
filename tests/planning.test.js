@@ -236,3 +236,39 @@ test("an attainable model does not display green plan readiness when actual pick
   assert.match(box.innerHTML, /計画不成立：ピッキング実績/);
   context.document.querySelector = original;
 });
+
+test("packing finish displays distinguish completion, deadline failure, missing inputs and no demand", () => {
+  const original = context.document.querySelector;
+  const render = input => {
+    const elements = {};
+    context.inputForTest = input;
+    context.document.querySelector = selector => elements[selector] ||= {};
+    vm.runInContext("state = inputForTest; renderPlanSummary(); renderPackingDetail()", context);
+    return elements;
+  };
+  try {
+    const complete = fixture();
+    const before = calculate(complete);
+    complete.actuals = [{ time: "13:10", totalCompleted: 10 }, { time: "13:40", totalCompleted: 20 }];
+    assert.deepEqual(calculate(complete).feasible, before.feasible, "actual picking must not change the planned simulation");
+    const success = render(complete);
+    assert.match(success['#plan-summary'].innerHTML, /計画上の梱包完了見込み：\d{2}:\d{2}/);
+    assert.match(success['#plan-summary'].innerHTML, /計画開始時点/);
+    assert.match(success['#plan-summary'].innerHTML, /実績を反映した再予測ではありません/);
+    assert.match(success['#packing-notice'].textContent, /実績を反映した再予測ではありません/);
+    const failed = fixture(); failed.settings.packing[0].capacity = 0;
+    const failure = render(failed);
+    assert.match(failure['#plan-summary'].innerHTML, /計画上の梱包完了見込み：期限内未達/);
+    assert.match(failure['#packing-detail-body'].innerHTML, /<td>期限内未達<\/td>/);
+    const missing = fixture(); missing.dailyInput.bufferMinutes = "";
+    const unknown = render(missing);
+    assert.match(unknown['#plan-summary'].innerHTML, /計画上の梱包完了見込み：算出不可/);
+    assert.match(unknown['#packing-detail-body'].innerHTML, /<td>算出不可<\/td>/);
+    assert.doesNotMatch(unknown['#packing-detail-body'].innerHTML, /期限内未達/);
+    const empty = render(fixture(0));
+    assert.match(empty['#plan-summary'].innerHTML, /計画上の梱包完了見込み：対象なし/);
+    for (const result of [success, failure, unknown, empty]) {
+      assert.doesNotMatch(result['#plan-summary'].innerHTML + result['#packing-detail-body'].innerHTML, /未達／算出不可/);
+    }
+  } finally { context.document.querySelector = original; }
+});
