@@ -9,7 +9,6 @@
 <body>
   <header class="app-header">
     <div>
-      <p class="eyebrow">WAREHOUSE OPERATIONS</p>
       <h1>倉庫作業進捗 <span>ローカルデモ</span></h1>
     </div>
     <div class="header-controls">
@@ -28,19 +27,19 @@
 
   <main>
     <section id="summary" class="panel active" aria-labelledby="summary-title">
-      <div class="section-heading"><div><p class="eyebrow">TODAY'S OVERVIEW</p><h2 id="summary-title">全体サマリー</h2></div><p class="muted">ピック構成を反映した平均生産性から理想進捗を算出します</p></div>
+      <div class="section-heading"><div><h2 id="summary-title">全体サマリー</h2></div></div>
       <div id="progress-time-info" class="inline-metrics time-info"></div>
       <div id="kpi-grid" class="kpi-grid"></div>
       <div class="card staffing-card">
         <div class="card-title"><div><span class="tag calc">計算値</span><h3>現在の人員状況</h3></div></div>
         <div id="staffing-summary" class="staffing-summary"></div>
-        <p class="staffing-note">梱包開始期限を迎えたラインの必要人数を共通投入可能総人員から控除しています</p>
+        <p class="staffing-note">梱包開始期限を迎えたラインの必要人数を共通投入可能総人員から減算</p>
         <div class="allocation-heading"><div><h4>ピッキング目安配分</h4><span>標準作業量比による目安</span></div></div>
         <div id="picking-staff-allocation" aria-live="polite"></div>
         <p class="allocation-note">現在時刻までに対象となった作業の標準作業量比率から按分した目安です。工程別実績は未反映です。</p>
       </div>
       <div class="card chart-card">
-        <div class="card-title"><div><span class="tag calc">計算値</span><h3>理想／実績進捗</h3></div><div class="legend"><span><i class="ideal"></i>理想進捗</span><span><i class="actual"></i>実績進捗</span><span><i class="packing-marker"></i>梱包 開始リミット</span><span><i class="finish-marker"></i>ピッキング終了見込み</span><span><i class="current-marker"></i>現在時刻</span></div></div>
+        <div class="card-title"><div><span class="tag calc">計算値</span><h3>ピッキング進捗　理想／実績進捗</h3></div><div class="legend"><span><i class="ideal"></i>理想進捗</span><span><i class="actual"></i>実績進捗</span><span><i class="packing-marker"></i>梱包 開始リミット</span><span><i class="finish-marker"></i>ピッキング終了見込み</span><span><i class="current-marker"></i>現在時刻</span></div></div>
         <canvas id="progress-chart" height="340" aria-label="理想進捗と実績進捗、および現在時刻、梱包開始リミット時刻、ピッキング終了見込みのグラフ"></canvas>
         <div class="event-strip" id="event-strip"></div>
       </div>
