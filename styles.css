@@ -19,3 +19,8 @@
 .auto-time-status{font-size:12px;white-space:nowrap}
 .header-controls .header-meta{padding-left:12px;border-left:1px solid #526b80}
 @media(max-width:760px){.app-header{align-items:flex-start;flex-direction:column}.header-controls{width:100%;justify-content:flex-start;gap:8px 12px}.header-controls .header-meta{display:block;margin-left:auto}}
+
+.plan-summary .plan-confirmation{font-size:13px;color:#526577}
+.plan-summary .plan-constraint{font-weight:700}
+.plan-summary details{margin:10px 0}.plan-summary summary{cursor:pointer}
+.plan-summary .plan-observation{font-size:13px}

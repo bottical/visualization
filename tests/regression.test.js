@@ -291,3 +291,6 @@ state.dailyInput.outsourced = "11401";
 if (calculatePackingAllocation().some(line => line.count !== null)) throw new Error("外部委託超過を補正した");
 console.log(JSON.stringify({ ideal: metrics.idealPoint.count, actual: metrics.current.count, diff: metrics.diffCount, idealSpeed: metrics.idealSpeed, recentSpeed: metrics.recentSpeed, pace: metrics.recentSpeed / metrics.idealSpeed * 100, delay: metrics.delay, finish: minutesToTime(metrics.finish), status: metrics.status }, null, 2));
 `, context);
+
+const html = fs.readFileSync("index.html", "utf8");
+if (!html.includes("詳細シミュレーション条件（任意）") || /<details class="card planning-settings"[^>]*\bopen\b/.test(html)) throw new Error("詳細条件は任意・初期折りたたみ");
