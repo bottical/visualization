@@ -20,6 +20,7 @@ const context = {
   document: { querySelector: () => ({ textContent: "" }), querySelectorAll: () => [] }
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync("planning.js", "utf8"), context);
 
 vm.runInContext(`${source}
 function assertNear(actual, expected, tolerance, label) {
@@ -152,15 +153,15 @@ state.dailyInput.bufferMinutes = String(excelFixture.bufferMinutes);
 state.dailyInput.manualPeople = String(excelFixture.manualPeople);
 state.actuals = clone(excelFixture.actuals);
 const metrics = currentMetrics();
-assertNear(metrics.idealPoint.count, 11324.43009648206, 0.1, "理想累計");
+assertNear(metrics.idealPoint.count, 6117.166666666667, 0.1, "理想累計");
 assertNear(metrics.current.count, 9800, 0, "実績累計");
-assertNear(metrics.diffCount, -1524.43009648206, 0.1, "件数差");
-assertNear(metrics.idealSpeed, 1950.605115218674, 0.1, "現在理想速度");
+assertNear(metrics.diffCount, 3682.833333333333, 0.1, "件数差");
+assertNear(metrics.idealSpeed, 2392, 0.1, "現在理想速度");
 assertNear(metrics.recentSpeed, 1800, 0, "直近実績速度");
-assertNear(metrics.recentSpeed / metrics.idealSpeed * 100, 92.279, 0.1, "直近ペース");
-assertNear(metrics.delay, 46.89099, 0.1, "遅れ時間");
+assertNear(metrics.recentSpeed / metrics.idealSpeed * 100, 75.2508, 0.1, "直近ペース");
+assertNear(metrics.delay, 0, 0.1, "遅れ時間");
 if (minutesToTime(metrics.finish) !== "14:33") throw new Error("終了見込み: " + minutesToTime(metrics.finish));
-if (metrics.status !== "遅延拡大") throw new Error("状態: " + metrics.status);
+if (metrics.status !== "先行") throw new Error("状態: " + metrics.status);
 state.actuals = [{ time: "13:30", totalCompleted: 9500 }];
 const staleMetrics = currentMetrics();
 if (staleMetrics.current.minute !== timeToMinutes("13:30") || staleMetrics.idealPoint.minute !== timeToMinutes("13:30") || staleMetrics.dataAge !== 10) throw new Error("現在時刻と進捗評価時刻の分離");
@@ -232,9 +233,9 @@ const originalQuerySelector = document.querySelector;
 document.querySelector = selector => selector === "#progress-chart" ? { clientWidth: 900, getContext: () => fakeContext } : originalQuerySelector(selector);
 renderChart(metrics.ideal, metrics.actual, { currentMinute: metrics.currentMinute, finishMinute: null, packing });
 const staffingSummary = calculateCurrentStaffingSummary();
-if (staffingSummary.totalPeople !== 40 || staffingSummary.packingPeople !== 18 || staffingSummary.pickingPeople !== 22 || staffingSummary.staffingStatus !== "充足") throw new Error("現在の人員状況");
-if (minutesToDeadlineTime(staffingSummary.nextPackingStart) !== "14:21") throw new Error("次の梱包開始");
-const allocation22 = calculatePickingStaffAllocation();
+if (staffingSummary.totalPeople !== 40 || staffingSummary.packingPeople !== 29 || staffingSummary.pickingPeople !== 11 || staffingSummary.staffingStatus !== "要確認") throw new Error("現在の人員状況");
+if (staffingSummary.nextPackingStart !== null) throw new Error("シミュレーション済みラインを次の開始として表示した");
+const allocation22 = calculatePickingStaffAllocation(22);
 if (allocation22.status !== "ready" || allocation22.totalPeople !== 22 || allocation22.rows.reduce((total, row) => total + row.people, 0) !== 22) throw new Error("目安配分22人の合計");
 if (JSON.stringify(allocation22.rows.map(row => row.people)) !== JSON.stringify([1, 9, 7, 5])) throw new Error("13:40目安配分: " + allocation22.rows.map(row => row.people));
 const allocation14 = calculatePickingStaffAllocation(14);
@@ -260,12 +261,12 @@ if (!(after13.rows[0].releasedCount > before13.rows[0].releasedCount && after13.
 state.dailyInput.currentTime = excelFixture.currentTime;
 state.dailyInput.currentTime = "13:05";
 const radishStartSummary = calculateCurrentStaffingSummary();
-if (packingStatus(packing[3]) !== "開始期限到来" || radishStartSummary.packingPeople !== 18) throw new Error("ラディッシュ開始分の人員控除");
+if (packingStatus(packing[3]) !== "開始期限到来" || radishStartSummary.packingPeople !== 29) throw new Error("ラディッシュ開始分の人員控除");
 state.dailyInput.currentTime = "14:21";
 const manualStartSummary = calculateCurrentStaffingSummary();
-if (manualStartSummary.packingPeople !== 26 || minutesToDeadlineTime(manualStartSummary.nextPackingStart) === "14:21") throw new Error("手梱包開始分の人員控除");
+if (manualStartSummary.packingPeople !== 29 || minutesToDeadlineTime(manualStartSummary.nextPackingStart) === "14:21") throw new Error("手梱包開始分の人員控除");
 const manualStartAllocation = calculatePickingStaffAllocation();
-if (manualStartAllocation.totalPeople !== 14 || manualStartAllocation.rows.reduce((total, row) => total + row.people, 0) !== 14) throw new Error("梱包開始後の目安配分再計算");
+if (manualStartAllocation.totalPeople !== 11 || manualStartAllocation.rows.reduce((total, row) => total + row.people, 0) !== 11) throw new Error("梱包開始後の目安配分再計算");
 state.dailyInput.currentTime = excelFixture.currentTime;
 state.dailyInput.bufferMinutes = "";
 const unknownPackingSummary = calculateCurrentStaffingSummary();
