@@ -150,7 +150,7 @@ function isPackingScheduleReady(allocations) {
 }
 let packingPlanCache = null;
 function getPackingPlan() {
-  const key = JSON.stringify({ settings: state.settings, dailyInput: state.dailyInput });
+  const key = JSON.stringify({ settings: state.settings, dailyInput: state.dailyInput, actuals: state.actuals });
   if (packingPlanCache?.key !== key) packingPlanCache = { key, value: calculatePackingPlan(state) };
   return packingPlanCache.value;
 }
@@ -226,16 +226,8 @@ function calculatePackingAllocation(totalOverride = null) {
 function input(path, value, options = {}) { const type = options.type || "number"; const attrs = [`type="${type}"`, `value="${escapeHtml(value ?? "")}"`, `data-path="${path}"`]; if (options.min !== undefined) attrs.push(`min="${options.min}"`); if (type === "number" && options.max !== undefined) attrs.push(`max="${options.max}"`); if (options.step !== undefined) attrs.push(`step="${options.step}"`); return `<input ${attrs.join(" ")} aria-label="${options.label || path}">`; }
 function setPath(path, value) { const parts = path.split("."); let target = state; parts.slice(0, -1).forEach(p => { target = target[p]; }); target[parts.at(-1)] = value; }
 function updateStatePath(path, value, now = new Date()) {
-  // Save the observed prefix before changing the plan. New batch quantities
-  // entered at their release update only that release and its future.
-  if (path !== "dailyInput.currentTime" && !path.startsWith("dailyInput.packingPlan.history")) {
-    const minute = timeToMinutes(state.dailyInput.currentTime), previous = getPackingPlan().displayed;
-    if (minute !== null && previous.length) {
-      state.dailyInput.packingPlan = mergePackingPlan(state.dailyInput.packingPlan);
-      const through = Math.max(minute, state.dailyInput.packingPlan.history.through ?? minute);
-      state.dailyInput.packingPlan.history = { through, points: previous.filter(point => point.minute < through).map(({ minute, count, hours }) => ({ minute, count, hours })) };
-    }
-  }
+  // Inputs and observations are freely correctable. Legacy plan history is
+  // retained for comparison only and never constrains a new calculation.
   setPath(path, value);
   if (path === "settings.times.start" && state.dailyInput.autoCurrentTime === true) {
     state.dailyInput.currentTime = getCurrentTenMinuteTime(now, value);
@@ -250,7 +242,8 @@ function currentMetrics() {
   const finish = current && totals.totalCount !== null ? calculateFinishEstimate(current.minute, current.count, totals.totalCount, recentSpeed) : null;
   const base = { totals, ideal, actual, current, currentMinute, recentSpeed, finish, dataAge: current ? currentMinute - current.minute : null, status: "未判定" };
   if (!current || !ideal.length || currentMinute === null) return base;
-  const idealPoint = [...ideal].reverse().find(x => x.minute <= current.minute); if (!idealPoint) return base;
+  const reference = getPackingPlan().initialPlan.points;
+  const idealPoint = [...reference].reverse().find(x => x.minute <= current.minute); if (!idealPoint) return base;
   const idealSpeed = calculateIdealSpeedAt(current.minute);
   const status = judgeProgressStatus({ actualCount: current.count, idealCount: idealPoint.count, totalCount: totals.totalCount, recentSpeed, idealSpeed });
   return { ...base, idealPoint, idealSpeed, status, diffCount: current.count - idealPoint.count, delay: calculateDelayMinutes(current.count, idealPoint.count, idealSpeed) };
@@ -260,9 +253,19 @@ function calculateCurrentStaffingSummary() {
   const point = plan.operational.points.find(point => point.minute === minute);
   const totalPeople = minute === null ? null : staffForMinute(minute);
   if (!point) return { totalPeople, packingPeople: null, pickingPeople: null, nextPackingStart: null, staffingStatus: null };
-  const future = plan.operational.lines.map(line => line.firstStart).filter(start => start !== null && start > minute);
+  const movements = [];
+  const points = plan.operational.points;
+  for (let i = 1; i < points.length; i++) {
+    const point = points[i], before = points[i - 1];
+    if (point.minute <= minute) continue;
+    for (const [id, people] of Object.entries(point.linePeople || {})) {
+      const increase = people - (before.linePeople?.[id] || 0);
+      if (increase > 0) movements.push({ minute: point.minute, line: state.settings.packing.find(l => l.id === id)?.name || id, people: increase });
+    }
+  }
+  const nextMovement = movements[0] || null;
   return { totalPeople, packingPeople: point.packingPeople, pickingPeople: point.pickingPeople,
-    nextPackingStart: future.length ? Math.min(...future) : null,
+    nextPackingStart: nextMovement?.minute ?? null, nextMovement,
     staffingStatus: plan.evaluation.status === "unknown" ? "要確認" : point.otherPeople + point.packingPeople <= totalPeople ? "充足" : "不足" };
 }
 function calculatePickingStaffAllocation(pickingPeopleOverride) {
@@ -295,12 +298,12 @@ function calculatePickingStaffAllocation(pickingPeopleOverride) {
   return { totalPeople, totalWorkHours, rows, status: "ready" };
 }
 function renderStaffingSummary() {
-  const { totalPeople, packingPeople, pickingPeople, nextPackingStart, staffingStatus } = calculateCurrentStaffingSummary();
+  const { totalPeople, packingPeople, pickingPeople, nextPackingStart, nextMovement, staffingStatus } = calculateCurrentStaffingSummary();
   const items = [
     ["共通投入可能総人員", totalPeople === null ? "－" : `${formatNumber(totalPeople)}人`],
-    ["梱包稼働要員", packingPeople === null ? "－" : `${formatNumber(packingPeople)}人`],
-    ["ピッキング可能人数", pickingPeople === null ? "－" : `${formatNumber(pickingPeople)}人`],
-    ["次の梱包開始", nextPackingStart === null ? "－" : minutesToDeadlineTime(nextPackingStart)],
+    ["計画上の梱包配置人数", packingPeople === null ? "－" : `${formatNumber(packingPeople)}人`],
+    ["計画上のピッキング配置人数", pickingPeople === null ? "－" : `${formatNumber(pickingPeople)}人`],
+    ["次の人員移動候補", nextPackingStart === null ? "候補なし" : `${minutesToDeadlineTime(nextPackingStart)} ${escapeHtml(nextMovement.line)}へ${nextMovement.people}人`],
     ["人員余力", staffingStatus === null ? `<span class="status">未判定</span>` : `<span class="status ${staffingStatus === "充足" ? "good" : staffingStatus === "要確認" ? "warn" : "bad"}">${staffingStatus}</span>`]
   ];
   document.querySelector("#staffing-summary").innerHTML = items.map(([label, value]) => `<div class="staffing-metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
@@ -314,9 +317,9 @@ function renderSummary() {
   const m = currentMetrics(); const ready = m.current && m.idealPoint; const pace = ready && m.recentSpeed !== null && m.idealSpeed > 0 ? m.recentSpeed / m.idealSpeed * 100 : null;
   const items = [
     ["現在状態", `<span class="status ${statusClass(m.status)}">${m.status}</span>`, "件数差・直近速度で判定", "highlight"],
-    ["理想累計", ready ? `${formatNumber(m.idealPoint.count)}件` : "－", ready ? `理想速度 ${formatNumber(m.idealSpeed)} 件/時` : "入力待ち", ""],
+    ["当初計画累計", ready ? `${formatNumber(m.idealPoint.count)}件` : "－", ready ? `理想速度 ${formatNumber(m.idealSpeed)} 件/時` : "入力待ち", ""],
     ["実績累計", m.current ? `${formatNumber(m.current.count)}件` : "－", m.current ? `最終実績 ${minutesToTime(m.current.minute)}` : "実績待ち", "actual-kpi"],
-    ["差分", ready ? `${m.diffCount >= 0 ? "+" : ""}${formatNumber(m.diffCount)}件` : "－", "実績件数－理想件数", ""],
+    ["差分", ready ? `${m.diffCount >= 0 ? "+" : ""}${formatNumber(m.diffCount)}件` : "－", "実績件数－当初計画件数", ""],
     ["遅れ時間", ready && m.delay !== null ? `${formatNumber(m.delay)}分` : "－", `許容 ${state.settings.toleranceMinutes}分`, ""],
     ["直近ペース", pace !== null ? `${formatNumber(pace)}%` : "－", m.recentSpeed !== null ? `${formatNumber(m.recentSpeed)} 件/時` : "算出不可", "actual-kpi"],
     ["ピッキング終了見込み", m.finish !== null && m.finish !== undefined ? minutesToTime(m.finish) : "－", m.finish ? "直近速度から概算" : "算出不可", ""]
@@ -346,12 +349,12 @@ function formatPlannedPackingFinish(finish, status) {
 }
 function renderPackingTable(selector, detail) {
   const buffer = valueOrNull(state.dailyInput.bufferMinutes); const rows = calculatePlannedPackingRows();
-  document.querySelector(selector).innerHTML = rows.map(x => { const status = x.planStatus, share = `<td class="number">${formatNumber(x.normalizedShare * 100,2)}%</td>`, count = `<td class="number approx">${x.count === null ? "－" : `${formatNumber(x.count)} 件${x.estimated ? "（概算）" : "（確定）"}`}</td>`; return `<tr><td><strong>${x.name}</strong>${x.id === "manual" ? ' <span class="tag provisional">配送区分注意</span>' : ""}</td>${detail ? share + count : count + share}<td class="number">${x.effectiveCapacity === null ? "算出不可" : `${formatNumber(x.effectiveCapacity)} 件/時`}</td><td>${x.people === null ? "未入力" : x.id === "manual" ? `${x.people}人` : `${x.people}人（固定）`}</td><td>${x.deadline}</td>${detail ? `<td>${buffer === null ? "未入力" : `${buffer}分`}</td><td>${formatPlannedPackingFinish(x.finish, x.planStatus)}</td>` : ""}<td class="approx">${x.latestStartMinutes === null ? "算出不可" : minutesToDeadlineTime(x.latestStartMinutes)}</td><td><span class="status ${statusClass(status)}">${status}</span></td></tr>`; }).join("");
+  document.querySelector(selector).innerHTML = rows.map(x => { const status = x.planStatus, share = `<td class="number">${formatNumber(x.normalizedShare * 100,2)}%</td>`, count = `<td class="number approx">${x.count === null ? "－" : `${formatNumber(x.count)} 件${x.estimated ? "（概算）" : "（確定）"}`}</td>`; return `<tr><td><strong>${x.name}</strong>${x.id === "manual" ? ' <span class="tag provisional">配送区分注意</span>' : ""}</td>${detail ? share + count : count + share}<td class="number">${x.effectiveCapacity === null ? "算出不可" : `${formatNumber(x.effectiveCapacity)} 件/時`}</td><td>${x.people === null ? "未入力" : x.id === "manual" ? `${x.people}人` : `${x.people}人（固定）`}</td><td>${x.deadline}</td>${detail ? `<td>${buffer === null ? "未入力" : `${buffer}分`}</td>` : ""}<td>${formatPlannedPackingFinish(x.finish, x.planStatus)}${x.remainingEstimate === null ? "" : `<small class="planning-note">残梱包推定 ${formatNumber(x.remainingEstimate)}件／仕掛推定 ${formatNumber(x.wipEstimate)}件</small>`}</td><td class="approx">${x.latestStartMinutes === null ? "算出不可" : minutesToDeadlineTime(x.latestStartMinutes)}</td><td><span class="status ${statusClass(status)}">${status}</span></td></tr>`; }).join("");
 }
-function renderPackingDetail() { renderPackingTable("#packing-detail-body", true); const outsourced = valueOrNull(state.dailyInput.outsourced); document.querySelector("#packing-notice").textContent = outsourced === null ? "外部委託件数が未入力のため、社内梱包対象件数と概算値は確定できません。" : "梱包完了時刻は計画上の完了見込みです。計画開始時点から入力条件でシミュレーションしており、現時点のピッキング・梱包実績を反映した再予測ではありません。表示件数・開始リミット時刻も確定実績ではありません。"; }
+function renderPackingDetail() { renderPackingTable("#packing-detail-body", true); const outsourced = valueOrNull(state.dailyInput.outsourced); document.querySelector("#packing-notice").textContent = outsourced === null ? "外部委託件数が未入力のため、社内梱包対象件数と概算値は確定できません。" : "梱包完了時刻は採用配置計画の推定値です。ピッキング実績があれば将来を再計算しますが、梱包済・仕掛・残梱包は推定です。表示件数・開始リミット時刻も確定実績ではありません。"; }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
 function renderPlanSummary() {
-  const { model, evaluation, shortages } = getPackingPlan();
+  const { model, evaluation, shortages, observation } = getPackingPlan();
   const presentation = getPlanPresentation(evaluation);
   const reasons = [...evaluation.reasons];
   const observations = [];
@@ -371,8 +374,9 @@ function renderPlanSummary() {
   const firstShortage = shortages.filter(p => p.minute <= model.current && model.times.slice(1).includes(p.minute)).at(-1) || shortages.find(p => p.minute <= model.current);
   const shortageText = firstShortage ? `必要供給と目標の乖離：${minutesToTime(firstShortage.minute)}に${formatNumber(firstShortage.count)}件不足（理論必要${formatNumber(firstShortage.required)}件／目標${formatNumber(firstShortage.target)}件）。期限可否は人員・ライン別供給・仕掛を含めて別途判定します。` : "";
   const details = [...reasons, ...evaluation.assumptions, ...observations, ...shortages.filter(p => model.times.slice(1).includes(p.minute)).map(p => `${minutesToTime(p.minute)} バッチ到来時の必要供給不足：${formatNumber(p.count)}件（必要${formatNumber(p.required)}件／目標${formatNumber(p.target)}件）`)];
+  const planningBasis = observation.last ? `実績反映の概算再計画：最終ピック観測 ${minutesToTime(observation.last.minute)}、現在との差 ${observation.age}分。ライン別供給・梱包済・仕掛・残梱包は推定です。` : "実績なし：計画開始時点からの概算配置計画。";
   const assumptions = evaluation.assumptions.length ? "梱包先別件数・初期仕掛・稼働時刻など、適用中の仮定は下の一覧で確認できます。詳細条件の確認により結果が変わる可能性があります。" : "必要な入力条件は確認済みです。";
-  box.innerHTML = `<strong>${presentation.title}</strong><p>${presentation.description}</p>${reasons.length ? `<p class="plan-constraint">主な制約：${escapeHtml(reasons[0])}</p>` : ""}${shortageText ? `<p class="plan-constraint">${escapeHtml(shortageText)}</p>` : ""}<p class="plan-confirmation">${presentation.confirmation} — ${assumptions}</p>${details.length ? `<details><summary>判定根拠・適用中の仮定・実績の確認（${details.length}件）</summary><ul>${details.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul><p>稼働開始可能時刻の仮定は設備が早期稼働可能という意味です。人員や仕掛の確保を意味せず、人員・仕掛供給制約は引き続き適用します。</p></details>` : ""}${observations.length ? `<p class="plan-observation">実績・稼働の確認：${escapeHtml(observations[0])}</p>` : ""}<p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish, finishStatus)}　｜　出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><small>計画開始時点から入力条件でシミュレーションした結果です。現時点のピッキング・梱包実績を反映した再予測ではありません。対象は到来済みバッチです（未来バッチは未反映）。実際の梱包完了を保証しません。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。別の配置方法で解決できる可能性があります。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</small>`;
+  box.innerHTML = `<strong>${presentation.title}</strong><p>${presentation.description}</p><p>${planningBasis}</p><p>配置探索：${evaluation.search?.tested ?? 0}候補／上限${evaluation.search?.limit ?? 160}（5分単位候補・1分単位検証）</p>${reasons.length ? `<p class="plan-constraint">主な制約：${escapeHtml(reasons[0])}</p>` : ""}${shortageText ? `<p class="plan-constraint">${escapeHtml(shortageText)}</p>` : ""}<p class="plan-confirmation">${presentation.confirmation} — ${assumptions}</p>${details.length ? `<details><summary>判定根拠・適用中の仮定・実績の確認（${details.length}件）</summary><ul>${details.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul><p>稼働開始可能時刻の仮定は設備が早期稼働可能という意味です。人員や仕掛の確保を意味せず、人員・仕掛供給制約は引き続き適用します。</p></details>` : ""}${observations.length ? `<p class="plan-observation">実績・稼働の確認：${escapeHtml(observations[0])}</p>` : ""}<p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish, finishStatus)}　｜　出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><small>入力条件と有効なピッキング実績から同一エンジンで再計算した推定計画です。実梱包実績は未取得です。対象は到来済みバッチです（未来バッチは未反映）。実際の梱包完了を保証しません。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。別の配置方法で解決できる可能性があります。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</small>`;
 }
 function calculatePlannedPackingRows() {
   const { model, operational: feasible } = getPackingPlan();
@@ -399,7 +403,7 @@ function calculatePlannedPackingRows() {
     }
     const point = feasible.points.find(point => point.minute === model.current);
     const people = master.id === "manual" ? calculateStaffingCapacity(model.current, model, state).manual : master.people;
-    const effectiveCapacity = line && !model.errors.length ? calculatePackingCapacity({ ...line, start: model.times[0] }, model.current, model, state) : null;
+    const effectiveCapacity = line && !model.errors.length ? master.id === "manual" ? line.capacity * (point?.linePeople?.manual || 0) : calculatePackingCapacity({ ...line, start: model.times[0] }, model.current, model, state) : null;
     const stats = feasible.lines.find(stats => stats.id === master.id);
     const complete = count === 0 || (jobs.length > 0 && feasible.jobs.filter(job => job.lineId === master.id).every(job => job.finishedAt !== null));
     const finish = complete && count > 0 ? Math.max(...feasible.jobs.filter(job => job.lineId === master.id).map(job => job.finishedAt)) : null;
@@ -407,7 +411,7 @@ function calculatePlannedPackingRows() {
       normalizedShare: shares > 0 ? master.share / shares : null, latestStartMinutes: latest, finish,
       deadline: jobs.length ? deadlines.map(deadline => minutesToTime(deadline + Number(state.dailyInput.bufferMinutes))).join("／") : master.deadlineType === "packet" ? state.settings.times.packetDeadline : state.settings.times.parcelDeadline,
       estimated: jobs.some(job => job.estimated), planStatus: model.errors.length ? "算出不可" : count === 0 ? "対象なし" : complete ? "計画内完了" : "期限内未達",
-      firstStart: stats?.firstStart ?? null, simulatedPeople: point?.activeLines.includes(master.id) ? people : 0 };
+      firstStart: stats?.firstStart ?? null, simulatedPeople: point?.linePeople?.[master.id] || 0, packedEstimate: point?.packedByLine?.[master.id] ?? null, remainingEstimate: count === null || !point ? null : count - (point.packedByLine?.[master.id] || 0), wipEstimate: point?.wipByLine?.[master.id] ?? null };
   });
 }
 function renderPlanSettings() {
@@ -419,7 +423,7 @@ function renderPlanSettings() {
     const row = plan.lines[line.id], prefix = `dailyInput.packingPlan.lines.${line.id}`;
     return `<tr><td>${line.name}</td><td>${input(`${prefix}.availableFrom`, row.availableFrom, { type: "time", step: 60, label: `${line.name} 開始可能時刻` })}</td><td>${input(`${prefix}.initialWip`, row.initialWip, { min: 0, step: 1, label: `${line.name} 初期仕掛` })}</td>${PLAN_BATCHES.map(field => `<td>${input(`${prefix}.confirmed.${field}`, row.confirmed[field], { min: 0, step: 1, label: `${line.name} ${field} 確定件数` })}</td>`).join("")}</tr>`;
   }).join("");
-  document.querySelector("#plan-settings").innerHTML = `<div class="table-scroll"><table><thead><tr><th>時間帯</th><th>その他拘束人数（梱包以外）</th><th>手梱包人数（空欄は当日人数を継承）</th></tr></thead><tbody>${periodRows}</tbody></table></div><p class="planning-note">共通投入可能総人数には梱包要員を含めてください。その他拘束人数へ梱包要員を再入力すると二重控除になります。</p><div class="table-scroll"><table><thead><tr><th>ライン</th><th>稼働開始可能時刻</th><th>開始時の仕掛（件）</th><th>6時確定件数</th><th>10時確定件数</th><th>13時確定件数</th></tr></thead><tbody>${lineRows}</tbody></table></div><p class="planning-note">確定件数はバッチ別の社内梱包対象です。空欄のラインにのみ残件数を概算配分します。「0」は確定0件です。初期仕掛は別の注文として加算しません。</p><div class="form-grid">${PLAN_BATCHES.map((field, index) => `<div class="field"><label>${[6, 10, 13][index]}時バッチ 手梱包ゆうパケット件数</label>${input(`dailyInput.packingPlan.manualPacket.${field}`, plan.manualPacket[field], { min: 0, step: 1, label: `${field} 手梱包ゆうパケット件数` })}<small>残りはゆうパック等。空欄は配送区分未確定。</small></div>`).join("")}</div><p class="planning-note">変更時には現在時刻より前の理想線を保存します。当日データのクリアで理想履歴も消去します。</p>`;
+  document.querySelector("#plan-settings").innerHTML = `<div class="table-scroll"><table><thead><tr><th>時間帯</th><th>その他拘束人数（梱包以外）</th><th>手梱包人数（空欄は当日人数を継承）</th></tr></thead><tbody>${periodRows}</tbody></table></div><p class="planning-note">共通投入可能総人数には梱包要員を含めてください。その他拘束人数へ梱包要員を再入力すると二重控除になります。</p><div class="table-scroll"><table><thead><tr><th>ライン</th><th>稼働開始可能時刻</th><th>開始時の仕掛（件）</th><th>6時確定件数</th><th>10時確定件数</th><th>13時確定件数</th></tr></thead><tbody>${lineRows}</tbody></table></div><p class="planning-note">確定件数はバッチ別の社内梱包対象です。空欄のラインにのみ残件数を概算配分します。「0」は確定0件です。初期仕掛は別の注文として加算しません。</p><div class="form-grid">${PLAN_BATCHES.map((field, index) => `<div class="field"><label>${[6, 10, 13][index]}時バッチ 手梱包ゆうパケット件数</label>${input(`dailyInput.packingPlan.manualPacket.${field}`, plan.manualPacket[field], { min: 0, step: 1, label: `${field} 手梱包ゆうパケット件数` })}<small>残りはゆうパック等。空欄は配送区分未確定。</small></div>`).join("")}</div><p class="planning-note">入力訂正・実績更新のたびに最新条件で再計算します。旧理想履歴は比較用として保持し、現在計画を拘束しません。</p>`;
 }
 function renderSettings() {
   const daily = [["現在時刻","currentTime","理想進捗・期限判定の基準（10分単位・秒入力不可）", "time"],["外部委託件数","outsourced","件"],["出荷前バッファ","bufferMinutes","分（当日設定）"],["手梱包当日投入人数","manualPeople","人（0～30）"],["09:30～10:00 投入可能総人数","staffing.before10","人"],["10:00～13:00 投入可能総人数","staffing.before13","人"],["13:00以降 投入可能総人数","staffing.after13","人"]];
@@ -554,8 +558,9 @@ function renderChart(ideal, actual, chartData = {}) {
   line(ideal,"#2878bd"); line(actual,"#f47b20",true); if(!ideal.length){ctx.fillStyle="#667789";ctx.font="bold 15px sans-serif";ctx.textAlign="center";ctx.fillText("対象件数・配送締切・バッファを確認してください",width/2,height/2);ctx.textAlign="start"}
 }
 function renderHeaderControls(){const checkbox=document.querySelector("#auto-current-time");checkbox.checked=state.dailyInput.autoCurrentTime===true;document.querySelector("#auto-current-time-status").textContent=state.dailyInput.autoCurrentTime?`現在 ${state.dailyInput.currentTime||"－"}`:"現在時刻 手動";}
-function renderAll(){renderHeaderControls();renderSummary();renderPickTable();renderPackingDetail();renderSettings();renderValidationMessages();bindDynamicInputs();}
-function bindDynamicInputs(){document.querySelectorAll("[data-path]").forEach(el=>el.addEventListener("change",()=>{updateStatePath(el.dataset.path,el.value);saveState();renderAll()}));document.querySelectorAll("[data-actual]").forEach(el=>el.addEventListener("change",()=>{const [i,k]=el.dataset.actual.split(".");state.actuals[Number(i)][k]=el.value;saveState();renderAll()}));document.querySelectorAll("[data-remove-actual]").forEach(el=>el.addEventListener("click",()=>{state.actuals.splice(Number(el.dataset.removeActual),1);saveState();renderAll()}));}
+let renderingAll = false;
+function renderAll(){if(renderingAll)return;renderingAll=true;try{renderHeaderControls();renderSummary();renderPickTable();renderPackingDetail();renderSettings();renderValidationMessages();bindDynamicInputs();}finally{renderingAll=false;}}
+function bindDynamicInputs(){document.querySelectorAll("[data-path]").forEach(el=>el.addEventListener("change",()=>{if(renderingAll)return;updateStatePath(el.dataset.path,el.value);saveState();renderAll()}));document.querySelectorAll("[data-actual]").forEach(el=>el.addEventListener("change",()=>{if(renderingAll)return;const [i,k]=el.dataset.actual.split(".");state.actuals[Number(i)][k]=el.value;saveState();renderAll()}));document.querySelectorAll("[data-remove-actual]").forEach(el=>el.addEventListener("click",()=>{state.actuals.splice(Number(el.dataset.removeActual),1);saveState();renderAll()}));}
 document.querySelectorAll(".tab").forEach(tab=>tab.addEventListener("click",()=>{document.querySelectorAll(".tab,.panel").forEach(x=>x.classList.remove("active"));tab.classList.add("active");document.querySelector(`#${tab.dataset.tab}`).classList.add("active");if(tab.dataset.tab==="summary")renderSummary()}));
 document.querySelector("#add-actual").addEventListener("click",()=>{if(appendActualRow()){saveState();renderAll();}});
 document.querySelector("#auto-current-time").addEventListener("change",event=>{state.dailyInput.autoCurrentTime=event.target.checked;if(event.target.checked)state.dailyInput.currentTime=getCurrentTenMinuteTime(new Date(),state.settings.times.start);saveState();renderAll();});

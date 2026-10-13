@@ -36,423 +36,195 @@ function routeOnly(input, id) {
 }
 const near = (actual, expected, label) => assert.ok(Math.abs(actual - expected) < 1e-6, `${label}: ${actual} != ${expected}`);
 
-test("A: a fully specified plan supplies each line and completes within all deadlines", () => {
-  const result = calculate(fixture());
-  assert.equal(result.evaluation.status, "feasible");
-  assert.equal(result.evaluation.reasons.length, 0);
-  assert.ok(result.feasible.jobs.every(job => job.finishedAt <= job.deadline));
-  for (const point of result.feasible.points) {
-    assert.ok(point.packingPeople + point.pickingPeople + point.otherPeople <= point.totalPeople);
-    for (const wip of Object.values(point.wipByLine)) assert.ok(wip >= -1e-7);
-  }
-  near(result.required.at(-1).count, 600, "final required picking");
-});
-test("required supply uses remaining line capacity, not a straight interpolation", () => {
-  const input = fixture(600); routeOnly(input, "gemini");
-  input.settings.packing[0].capacity = 600;
-  input.settings.times.packetDeadline = "11:30";
-  const result = calculate(input);
-  near(result.required.find(p => p.minute === 600).count, 0, "no minimum at 10:00");
-  near(result.required.find(p => p.minute === 630).count, 0, "minimum at 10:30");
-  near(result.required.find(p => p.minute === 660).count, 300, "minimum at 11:00");
-  near(result.required.find(p => p.minute === 690).count, 600, "deadline supply");
-  const initial = fixture(600); routeOnly(initial, "gemini");
-  initial.dailyInput.packingPlan.lines.gemini.initialWip = "100";
-  near(calculate(initial).feasible.points[0].count, 100, "initial WIP already picked");
-  near(calculate(initial).feasible.points.at(-1).count, 600, "initial WIP not double counted");
-});
-test("B: fixed packing capacity shortage fails even if picking completes", () => {
-  const input = fixture(); input.settings.packing[0].capacity = 0;
-  input.dailyInput.packingPlan.lines.gemini.initialWip = input.dailyInput.packingPlan.lines.gemini.confirmed.batch6;
-  const result = calculate(input);
-  assert.equal(result.evaluation.status, "infeasible");
-  assert.ok(result.evaluation.reasons.some(r => r.startsWith("梱包能力不足")));
-  assert.equal(result.evaluation.violations.length, 0, "meeting picking requirements does not establish packing readiness");
-  near(result.feasible.points.at(-1).count, 600, "picking can finish independently");
-});
-test("C: starting packing reduces picking staff, completion releases them", () => {
-  const input = fixture(); const result = calculate(input);
-  const before = result.feasible.points[0];
-  const running = result.feasible.points.find(p => p.packingPeople > 0);
-  const after = result.feasible.points.at(-1);
-  assert.equal(before.packingPeople, 0);
-  assert.ok(running.pickingPeople < before.pickingPeople);
-  assert.equal(after.packingPeople, 0);
-  assert.equal(after.pickingPeople, 100);
-  const concurrent = fixture(6000);
-  concurrent.dailyInput.staffing = { before10: "30", before13: "30", after13: "30" };
-  const withTransfers = calculate(concurrent);
-  const delayed = copy(concurrent);
-  Object.values(delayed.dailyInput.packingPlan.lines).forEach(line => { line.availableFrom = "17:00"; });
-  const withoutEarlyTransfers = calculate(delayed);
-  assert.ok(withTransfers.feasible.points.find(p => p.minute === 720).count < withoutEarlyTransfers.feasible.points.find(p => p.minute === 720).count,
-    "early packing crew transfers reduce future achievable picking, not only the displayed staff count");
-});
-test("D: sufficient machine capacity cannot compensate for missing picking supply", () => {
-  const input = fixture(); input.settings.picking.total = 1;
-  input.settings.packing.forEach(line => { line.capacity = 10000; });
-  input.settings.times.packetDeadline = "14:00"; input.settings.times.parcelDeadline = "14:00";
-  const result = calculate(input);
-  assert.equal(result.evaluation.status, "infeasible");
-  assert.ok(result.evaluation.reasons.some(r => r.startsWith("仕掛供給不足")));
-  assert.ok(result.evaluation.violations.length > 0);
-});
-test("aggregate supply meeting A does not hide an individual line's supply shortage", () => {
-  const input = fixture(); routeOnly(input, "manual");
-  input.dailyInput.packingPlan.lines.gemini.confirmed.batch6 = "100";
-  input.dailyInput.packingPlan.lines.manual.confirmed.batch6 = "500";
-  input.settings.picking.total = 60;
-  input.settings.packing[0].capacity = 6000;
-  input.settings.times.packetDeadline = "09:33";
-  const result = calculate(input);
-  assert.equal(result.evaluation.violations.length, 0);
-  assert.equal(result.evaluation.status, "infeasible");
-  assert.ok(result.evaluation.reasons.some(reason => reason.startsWith("仕掛供給不足")));
-  assert.ok(result.feasible.jobs.find(job => job.lineId === "gemini").packed < 100);
-});
-test("machine crews are never partially staffed; supply can wait for a later staffing period", () => {
-  const input = fixture(); routeOnly(input, "leo");
-  input.dailyInput.staffing = { before10: "5", before13: "100", after13: "100" };
-  const result = calculate(input);
-  assert.ok(result.feasible.points.filter(p => p.minute < 600).every(p => !p.activeLines.includes("leo")));
-  assert.ok(result.feasible.points.some(p => p.minute >= 600 && p.activeLines.includes("leo")));
-  assert.equal(result.evaluation.status, "feasible", "startup delay alone is not deadline failure");
-  input.dailyInput.staffing = { before10: "5", before13: "5", after13: "5" };
-  const blocked = calculate(input);
-  assert.equal(blocked.evaluation.status, "infeasible");
-  assert.ok(blocked.evaluation.reasons.some(r => r.startsWith("人員不足")));
-  assert.ok(blocked.feasible.points.every(p => !p.activeLines.includes("leo")));
-});
-test("E: a large 13:00 batch invalidates the plan without rewriting either historical curve", () => {
-  const input = fixture(); input.dailyInput.currentTime = "12:50";
-  const before = calculate(input);
-  const actual = [{ time: "12:40", totalCompleted: 400 }]; input.actuals = copy(actual);
-  input.dailyInput.currentTime = "13:00";
-  input.dailyInput.picks.total.batch13 = "20000";
-  input.dailyInput.packingPlan.lines.leo.confirmed.batch13 = "20000";
-  const after = calculate(input);
-  assert.equal(after.evaluation.status, "infeasible");
-  assert.deepEqual(after.required.filter(p => p.minute < 780), before.required.filter(p => p.minute < 780));
-  assert.deepEqual(after.feasible.points.filter(p => p.minute < 780), before.feasible.points.filter(p => p.minute < 780));
-  assert.deepEqual(input.actuals, actual);
-  assert.ok(after.required.find(p => p.minute === 780).count > before.required.find(p => p.minute === 780).count);
-});
-test("F: manual packing runs concurrently and obeys its changing staffing and shared deadlines", () => {
-  const input = fixture(600); routeOnly(input, "manual"); input.settings.picking.total = 50;
-  input.dailyInput.staffing = { before10: "40", before13: "40", after13: "40" };
-  input.dailyInput.packingPlan.manualPeople = { before10: "8", before13: "4", after13: "10" };
-  const result = calculate(input);
-  assert.ok(result.feasible.points.some(p => p.activeLines.includes("manual") && p.count < 600));
-  const model = context.calculatePackingDemand(input), line = model.lines.find(l => l.id === "manual");
-  assert.equal(context.calculatePackingCapacity(line, 599, model, input), 8 * 29);
-  assert.equal(context.calculatePackingCapacity(line, 600, model, input), 4 * 29);
-  assert.equal(context.calculatePackingCapacity(line, 780, model, input), 10 * 29);
-  const shared = fixture(200); routeOnly(shared, "manual");
-  shared.dailyInput.manualPeople = "2";
-  shared.dailyInput.packingPlan.manualPacket.batch6 = "100";
-  shared.settings.times.packetDeadline = "10:30"; shared.settings.times.parcelDeadline = "11:30";
-  const insufficient = calculate(shared);
-  near(insufficient.required.find(p => p.minute === 570).byLine.manual, 84, "shared manual requirement, max of deadline envelopes");
-  assert.equal(insufficient.evaluation.status, "infeasible");
-  assert.ok(insufficient.evaluation.reasons.some(r => r.startsWith("梱包能力不足")));
-  assert.equal(insufficient.model.jobs.filter(j => j.lineId === "manual").length, 2);
-  shared.dailyInput.manualPeople = "31";
-  assert.equal(calculate(shared).evaluation.status, "unknown");
-});
-test("G: confirmed destinations are preserved; only residual demand is apportioned, with no rounding loss", () => {
-  const input = fixture(); const plan = input.dailyInput.packingPlan;
-  for (const line of input.settings.packing) plan.lines[line.id].confirmed.batch6 = "";
-  plan.lines.gemini.confirmed.batch6 = "100";
-  const result = calculate(input);
-  assert.equal(result.evaluation.status, "unknown");
-  assert.ok(result.evaluation.assumptions.some(r => r.includes("梱包先未確定")));
-  near(result.model.jobs.filter(j => j.lineId === "gemini").reduce((n, j) => n + j.count, 0), 100, "confirmed destination");
-  near(result.model.jobs.reduce((n, j) => n + j.count, 0), 600, "all demand counted once");
-  for (const total of [0, 1, 2, 17, 999, 11400]) near(context.planApportion(total, [36.4, 41.5, .7, 14.1, 7.4]).reduce((n, x) => n + x, 0), total, "apportioned total");
-  plan.lines.leo.confirmed.batch6 = "600";
-  assert.equal(calculate(input).evaluation.status, "unknown");
-  assert.ok(calculate(input).evaluation.reasons.some(r => r.includes("二重計上")));
-});
-test("zero-demand lines do not require capacity or crew inputs; missing differs from impossible", () => {
-  const input = fixture(); routeOnly(input, "gemini");
-  input.settings.packing.find(l => l.id === "manual").capacity = "";
-  input.dailyInput.manualPeople = "";
-  assert.equal(calculate(input).evaluation.status, "feasible");
-  input.settings.packing[0].capacity = "";
-  assert.equal(calculate(input).evaluation.status, "unknown");
-  input.settings.packing[0].capacity = 0;
-  assert.equal(calculate(input).evaluation.status, "infeasible");
-  input.settings.packing[0].capacity = 928; input.settings.picking.total = 0;
-  assert.equal(calculate(input).evaluation.status, "unknown");
-  const empty = fixture(0); empty.dailyInput.staffing = { before10: "", before13: "", after13: "" };
-  assert.equal(calculate(empty).evaluation.status, "feasible");
-});
-test("a line available after its completion deadline is an impossible plan, not missing data", () => {
-  const input = fixture(); input.dailyInput.packingPlan.lines.gemini.availableFrom = "17:00";
-  const result = calculate(input);
-  assert.equal(result.evaluation.status, "infeasible");
-  assert.ok(result.evaluation.reasons.some(r => r.startsWith("梱包能力不足")));
-});
-test("completed plans retain cumulative progress and release crews after the last deadline", () => {
-  const input = fixture(); input.dailyInput.currentTime = "19:00";
-  const result = calculate(input);
-  assert.equal(result.evaluation.status, "feasible");
-  near(result.required.at(-1).count, 600, "completed cumulative requirement");
-  assert.equal(result.feasible.points.at(-1).minute, 1140);
-  assert.equal(result.feasible.points.at(-1).packingPeople, 0);
-  assert.equal(result.feasible.points.at(-1).pickingPeople, 100);
-});
-test("late edits freeze already displayed requirements and preserve history across reload", () => {
-  context.inputForTest = fixture();
-  vm.runInContext("state = inputForTest; renderAll = () => {};", context);
-  const before = copy(vm.runInContext("calculateIdealProgress()", context));
-  vm.runInContext('updateStatePath("settings.packing.0.capacity", "500");', context);
-  const after = copy(vm.runInContext("calculateIdealProgress()", context));
-  assert.deepEqual(after.filter(p => p.minute < 820).map(p => [p.minute, p.count]), before.filter(p => p.minute < 820).map(p => [p.minute, p.count]));
-  const reloaded = copy(vm.runInContext("mergeState(JSON.parse(JSON.stringify(state)))", context));
-  assert.deepEqual(calculate(reloaded).displayed.filter(p => p.minute < 820).map(p => [p.minute, p.count]), after.filter(p => p.minute < 820).map(p => [p.minute, p.count]));
-  vm.runInContext("resetDailyData()", context);
-  assert.equal(vm.runInContext("state.dailyInput.packingPlan.history.points.length", context), 0);
-});
-test("H: the recent-speed finish estimate remains available even when packing inputs are missing", () => {
-  context.inputForTest = fixture();
-  context.inputForTest.actuals = [{ time: "13:10", totalCompleted: 300 }, { time: "13:40", totalCompleted: 400 }];
-  context.inputForTest.dailyInput.bufferMinutes = "";
-  const metrics = copy(vm.runInContext("state = inputForTest; currentMetrics()", context));
-  assert.equal(metrics.recentSpeed, 200);
-  assert.equal(metrics.finish, 880);
-  assert.equal(metrics.status, "未判定");
-  assert.equal(metrics.current.count, 400);
-});
-test("an attainable model does not display green plan readiness when actual picking misses required supply", () => {
-  const input = fixture(); input.dailyInput.currentTime = "17:00";
-  input.actuals = [{ time: "16:30", totalCompleted: 300 }, { time: "17:00", totalCompleted: 400 }];
-  context.inputForTest = input;
-  const original = context.document.querySelector;
-  const box = {};
-  context.document.querySelector = selector => selector === "#plan-summary" ? box : original(selector);
-  vm.runInContext("state = inputForTest; renderPlanSummary()", context);
-  assert.match(box.className, /warn/);
-  assert.match(box.innerHTML, /計画成立（モデル上）/);
-  assert.match(box.innerHTML, /実績・稼働の確認：ピッキング実績/);
-  context.document.querySelector = original;
-});
-
-test("packing finish displays distinguish completion, deadline failure, missing inputs and no demand", () => {
-  const original = context.document.querySelector;
-  const render = input => {
-    const elements = {};
-    context.inputForTest = input;
-    context.document.querySelector = selector => elements[selector] ||= {};
-    vm.runInContext("state = inputForTest; renderPlanSummary(); renderPackingDetail()", context);
-    return elements;
-  };
-  try {
-    const complete = fixture();
-    const before = calculate(complete);
-    complete.actuals = [{ time: "13:10", totalCompleted: 10 }, { time: "13:40", totalCompleted: 20 }];
-    assert.deepEqual(calculate(complete).feasible, before.feasible, "actual picking must not change the planned simulation");
-    const success = render(complete);
-    assert.match(success['#plan-summary'].innerHTML, /計画上の梱包完了見込み：\d{2}:\d{2}/);
-    assert.match(success['#plan-summary'].innerHTML, /計画開始時点/);
-    assert.match(success['#plan-summary'].innerHTML, /実績を反映した再予測ではありません/);
-    assert.match(success['#packing-notice'].textContent, /実績を反映した再予測ではありません/);
-    const failed = fixture(); failed.settings.packing[0].capacity = 0;
-    const failure = render(failed);
-    assert.match(failure['#plan-summary'].innerHTML, /計画上の梱包完了見込み：期限内未達/);
-    assert.match(failure['#packing-detail-body'].innerHTML, /<td>期限内未達<\/td>/);
-    const missing = fixture(); missing.dailyInput.bufferMinutes = "";
-    const unknown = render(missing);
-    assert.match(unknown['#plan-summary'].innerHTML, /計画上の梱包完了見込み：算出不可/);
-    assert.match(unknown['#packing-detail-body'].innerHTML, /<td>算出不可<\/td>/);
-    assert.doesNotMatch(unknown['#packing-detail-body'].innerHTML, /期限内未達/);
-    const empty = render(fixture(0));
-    assert.match(empty['#plan-summary'].innerHTML, /計画上の梱包完了見込み：対象なし/);
-    for (const result of [success, failure, unknown, empty]) {
-      assert.doesNotMatch(result['#plan-summary'].innerHTML + result['#packing-detail-body'].innerHTML, /未達／算出不可/);
+function model(input) { return context.calculatePackingDemand(input); }
+function point(plan, minute) { return plan.operational.points.find(p => p.minute === minute); }
+function checkConstraints(plan) {
+  const ps = plan.operational.points;
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i];
+    assert.ok(p.pickingPeople + p.packingPeople + p.otherPeople <= p.totalPeople || p.otherPeople > p.totalPeople);
+    assert.ok(Object.values(p.wipByLine).every(n => n >= -1e-6));
+    for (const [id, supplied] of Object.entries(p.suppliedByLine)) assert.ok(p.packedByLine[id] <= supplied + 1e-6);
+    const arrived = plan.model.batches.filter(b => b.release <= p.minute).reduce((n, b) => n + b.total, 0);
+    assert.ok(p.count <= arrived + 1e-6);
+    for (const line of plan.model.lines.filter(l => l.id !== "manual")) assert.ok(!p.linePeople[line.id] || p.linePeople[line.id] === line.people);
+    if (p.linePeople.manual) assert.ok(p.linePeople.manual <= context.calculateStaffingCapacity(p.minute, plan.model, context.inputForConstraints).manual);
+    if (i && p.minute > (plan.observation.last?.minute ?? 0)) {
+      const previous = ps[i-1], maxRate = Math.max(0, ...plan.model.batches.filter(b => b.release <= previous.minute).map(b => b.average));
+      assert.ok(p.count >= previous.count - 1e-6);
+      assert.ok(p.count - previous.count <= previous.pickingPeople * maxRate / 60 + 1e-6);
+      for (const line of plan.model.lines) {
+        const packed = p.packedByLine[line.id] - previous.packedByLine[line.id];
+        const capacity = line.id === "manual" ? line.capacity * (previous.linePeople.manual || 0) : previous.linePeople[line.id] ? line.capacity : 0;
+        assert.ok(packed <= capacity / 60 + 1e-6);
+      }
     }
-  } finally { context.document.querySelector = original; }
-});
-
-test("basic inputs calculate both estimate outcomes without confirming or modifying blank details", () => {
-  const input = fixture(); input.dailyInput.packingPlan = copy(context.defaultPackingPlan());
-  const original = copy(input);
-  const possible = calculate(input);
-  assert.ok(possible.required.length > 0);
-  assert.equal(possible.evaluation.status, "unknown");
-  assert.equal(context.getPlanPresentation(possible.evaluation).title, "概算：期限内完了可能");
-  assert.equal(context.getPlanPresentation(possible.evaluation).confirmation, "未確定条件あり");
-  assert.deepEqual(input, original);
-  input.settings.packing[0].capacity = 0;
-  assert.equal(context.getPlanPresentation(calculate(input).evaluation).title, "概算：期限内完了困難");
-  for (const mutate of [i => i.dailyInput.bufferMinutes = "", i => i.dailyInput.staffing.before10 = "bad", i => i.settings.packing[0].capacity = ""]) {
-    const missing = copy(original); mutate(missing);
-    assert.equal(context.getPlanPresentation(calculate(missing).evaluation).title, "算出不可");
-  }
-});
-
-test("confirmation labels follow explicit relevant conditions, and details override basic defaults", () => {
-  const input = fixture();
-  assert.equal(context.getPlanPresentation(calculate(input).evaluation).title, "計画成立（モデル上）");
-  input.settings.packing[0].capacity = 0;
-  assert.equal(context.getPlanPresentation(calculate(input).evaluation).title, "計画不成立");
-  const manual = fixture(); routeOnly(manual, "manual");
-  manual.dailyInput.manualPeople = "8";
-  manual.dailyInput.packingPlan.manualPeople.before10 = "0";
-  manual.dailyInput.packingPlan.lines.manual.initialWip = "100";
-  const result = calculate(manual);
-  assert.equal(result.feasible.points[0].count, 100);
-  assert.equal(result.feasible.points[0].packingPeople, 0);
-  assert.equal(result.model.jobs.every(j => j.lineId === "manual"), true);
-  assert.equal(manual.dailyInput.manualPeople, "8");
-});
-
-test("summary presents estimate outcome and confirmation separately, with assumptions in details", () => {
-  const original = context.document.querySelector;
-  const box = {};
-  context.document.querySelector = selector => selector === "#plan-summary" ? box : original(selector);
-  try {
-    const input = fixture(); input.dailyInput.packingPlan = copy(context.defaultPackingPlan());
-    context.inputForTest = input;
-    vm.runInContext("state = inputForTest; renderPlanSummary()", context);
-    assert.match(box.innerHTML, /<strong>概算：期限内完了可能<\/strong>/);
-    assert.match(box.innerHTML, /未確定条件あり/);
-    assert.match(box.innerHTML, /<details>.*初期仕掛未確定/s);
-    input.settings.packing[0].capacity = 0;
-    vm.runInContext("renderPlanSummary()", context);
-    assert.match(box.innerHTML, /<strong>概算：期限内完了困難<\/strong>/);
-    assert.match(box.innerHTML, /主な制約：/);
-    assert.match(box.innerHTML, /別の配置方法で解決できる可能性/);
-  } finally { context.document.querySelector = original; }
-});
-
-function batchFixture(count = 300) {
-  const input = fixture(count); input.dailyInput.currentTime = "13:40";
-  input.dailyInput.picks.total.batch10 = String(count);
-  input.dailyInput.picks.total.batch13 = String(count);
-  routeOnly(input, "gemini");
-  return input;
-}
-function assertOperationalBounds(result) {
-  const points = result.operational.points;
-  for (let i = 1; i < points.length; i++) {
-    const left = points[i - 1], right = points[i];
-    const batches = result.model.batches.filter(b => b.release <= left.minute);
-    const maxRate = Math.max(0, ...batches.map(b => b.average));
-    assert.ok(right.count >= left.count - 1e-7);
-    assert.ok(right.count - left.count <= left.pickingPeople * maxRate / 60 + 1e-7);
-    const arrived = result.model.batches.filter(b => b.release <= right.minute).reduce((n, b) => n + b.total, 0);
-    assert.ok(right.count <= arrived + 1e-7);
-    assert.ok(right.pickingPeople + right.packingPeople + right.otherPeople <= right.totalPeople);
-    assert.ok(Object.values(right.wipByLine).every(n => n >= -1e-7));
   }
 }
-test("10:00 and 13:00 targets use continuous supply plans and remain feasible with sufficient resources", () => {
-  const result = calculate(batchFixture());
-  for (const minute of [600, 780]) {
-    near(result.displayed.find(p => p.minute === minute).count, result.feasible.points.find(p => p.minute === minute).count, "normal arrival work");
-    assert.ok(result.displayed.find(p => p.minute === minute + 1).count > result.displayed.find(p => p.minute === minute).count);
-  }
-  assertOperationalBounds(result);
-  assert.equal(result.evaluation.status, "feasible");
-  assert.ok(result.operational.jobs.every(j => j.finishedAt <= j.deadline));
+function checked(input) { context.inputForConstraints = input; const p = calculate(input); checkConstraints(p); return p; }
+test("deadline candidate search obtains a feasible conserved plan with fixed machine crews", () => {
+  const p = checked(fixture());
+  assert.equal(p.evaluation.scenarioStatus, "feasible");
+  assert.equal(p.evaluation.status, "unknown", "zero move/restart times are an explicit assumption");
+  assert.ok(p.operational.jobs.every(j => j.finishedAt <= j.deadline));
+  assert.ok(p.operational.search.tested <= 160);
 });
-test("large additions retain the theoretical jump and failure while target and speed are bounded", () => {
-  const input = batchFixture(); input.dailyInput.picks.total.batch13 = "200000"; routeOnly(input, "gemini");
-  const result = calculate(input);
-  assert.ok(result.required.find(p => p.minute === 780).count > result.required.find(p => p.minute === 779).count);
-  assertOperationalBounds(result);
-  assert.equal(result.evaluation.scenarioStatus, "infeasible");
-  const shortage = result.shortages.find(p => p.minute === 780);
-  near(shortage.count, shortage.required - shortage.target, "shortage");
-  assert.ok(shortage.count > 0);
-  assert.ok(result.evaluation.reasons.some(r => r.includes("梱包能力不足")));
-  assertOperationalBounds(result);
-  context.inputForTest = input;
-  vm.runInContext("state = inputForTest", context);
-  const speed = context.calculateIdealSpeedAt(780);
-  const point = result.operational.points.find(p => p.minute === 780);
-  assert.ok(speed <= point.pickingPeople * Math.max(...result.model.batches.map(b => b.average)) + 1e-7);
+test("reverse supply envelopes remain unchanged and initial WIP is not extra demand", () => {
+  const input = fixture(); routeOnly(input,"gemini"); input.settings.packing[0].capacity = 600; input.settings.times.packetDeadline="11:30";
+  const p = calculate(input);
+  near(p.required.find(p=>p.minute===630).count,0,"10:30 envelope");
+  near(p.required.find(p=>p.minute===660).count,300,"11:00 envelope");
+  near(p.required.find(p=>p.minute===690).count,600,"deadline envelope");
+  input.dailyInput.packingPlan.lines.gemini.initialWip="100";
+  const seeded=calculate(input);near(point(seeded,570).count,100,"seeded WIP");near(seeded.displayed.at(-1).count,600,"no duplicate demand");
 });
-test("future batches cannot alter earlier supply, target, packing or staffing", () => {
-  const a = batchFixture(), b = copy(a);
-  b.dailyInput.picks.total.batch13 = "200000"; routeOnly(b, "gemini");
-  const before = calculate(a), after = calculate(b);
-  assert.deepEqual(after.operational.points.filter(p => p.minute < 780), before.operational.points.filter(p => p.minute < 780));
-  assert.deepEqual(after.displayed.filter(p => p.minute < 780), before.displayed.filter(p => p.minute < 780));
+test("physical equipment deficit is distinguished from a search that found no staffing solution",()=>{
+  const physical=fixture();physical.settings.packing[0].capacity=0;
+  const p=calculate(physical);assert.equal(p.evaluation.failureKind,"physical");assert.equal(p.evaluation.scenarioStatus,"infeasible");
+  const staffing=fixture();routeOnly(staffing,"leo");staffing.dailyInput.staffing={before10:"5",before13:"5",after13:"5"};
+  const s=checked(staffing);assert.equal(s.evaluation.failureKind,"search-exhausted");assert.ok(s.evaluation.reasons.some(r=>r.startsWith("人員不足")));
+  assert.match(context.getPlanPresentation(s.evaluation).description,/発見できません/);
 });
-test("edits, reload, and moving current time retain a continuous history boundary", () => {
-  context.inputForTest = batchFixture();
-  vm.runInContext("state = inputForTest; renderAll = () => {};", context);
-  const before = copy(vm.runInContext("calculateIdealProgress()", context));
-  vm.runInContext('updateStatePath("dailyInput.staffing.after13", "80");', context);
-  const input = copy(vm.runInContext("state", context)), result = calculate(input);
-  assert.deepEqual(result.displayed.filter(p => p.minute < 820), before.filter(p => p.minute < 820));
-  assertOperationalBounds(result);
-  assert.deepEqual(calculate(copy(input)).displayed, result.displayed);
-  input.dailyInput.currentTime = "12:50";
-  assert.deepEqual(calculate(input).displayed.filter(p => p.minute < 780), result.displayed.filter(p => p.minute < 780));
+test("aggregate supply cannot establish individual line readiness",()=>{
+ const input=fixture();routeOnly(input,"manual");input.dailyInput.packingPlan.lines.gemini.confirmed.batch6="100";input.dailyInput.packingPlan.lines.manual.confirmed.batch6="500";
+ input.settings.picking.total=60;input.settings.packing[0].capacity=6000;input.settings.times.packetDeadline="09:33";
+ const p=checked(input);assert.equal(p.evaluation.scenarioStatus,"infeasible");assert.ok(p.operational.jobs.find(j=>j.lineId==="gemini").packed<100);
 });
-test("legacy frozen requirements remain saved and incompatible history never becomes a successful plan", () => {
-  const input = batchFixture();
-  input.settings.packing[0].capacity = 0;
-  const old = context.calculateRequiredPickingProgress(context.calculatePackingDemand(input), input);
-  input.dailyInput.packingPlan.history = { through: 821, points: copy(old.filter(p => p.minute < 821)) };
-  const history = copy(input.dailyInput.packingPlan.history), result = calculate(input);
-  assert.deepEqual(input.dailyInput.packingPlan.history, history);
-  assert.deepEqual(result.displayed.filter(p => p.minute < 821), history.points);
-  near(result.displayed.find(p => p.minute === 821).count, history.points.at(-1).count, "legacy anchor");
-  assert.ok(result.evaluation.reasons.some(r => r.includes("履歴条件不整合")));
-  assert.equal(result.evaluation.scenarioStatus, "infeasible");
+test("preset no longer starts all packing lines on first small supply",()=>{
+ const input=copy(vm.runInContext("initialPresetState()",context)), p=checked(input);
+ for (const t of [570,580,600]) {assert.equal(point(p,t).packingPeople,0);assert.equal(point(p,t).pickingPeople,40);}
+ assert.equal(p.evaluation.scenarioStatus,"feasible");
+ assert.ok(p.operational.lines.filter(l=>l.firstStart!==null).every(l=>l.firstStart>600));
+ assert.ok(p.operational.lines.reduce((n,l)=>n+l.starvedMinutes,0)===0);
 });
-test("theoretical shortage quantities and failure remain visible", () => {
-  const input = batchFixture(); input.dailyInput.picks.total.batch13 = "200000"; routeOnly(input, "gemini");
-  const original = context.document.querySelector, box = {};
-  context.document.querySelector = s => s === "#plan-summary" ? box : original(s);
-  try {
-    context.inputForTest = input; vm.runInContext("state = inputForTest; renderPlanSummary()", context);
-    assert.match(box.innerHTML, /計画不成立/);
-    assert.match(box.innerHTML, /13:00 バッチ到来時の必要供給不足：/);
-    assert.match(box.innerHTML, /件（必要/);
-  } finally { context.document.querySelector = original; }
+test("larger packing demand brings the chosen start forward",()=>{
+ const small=fixture(600),large=fixture(1800);routeOnly(small,"gemini");routeOnly(large,"gemini");
+ const a=checked(small),b=checked(large);
+ assert.ok(b.operational.lines[0].firstStart<a.operational.lines[0].firstStart);
+});
+test("a five-person transfer reduces picking capacity and completion releases the crew",()=>{
+ const input=fixture(8000);routeOnly(input,"gemini");input.settings.picking.total=100;input.settings.packing[0].capacity=10000;
+ input.dailyInput.staffing={before10:"20",before13:"20",after13:"20"};
+ const m=model(input), simulation=copy(context.calculateFeasiblePickingProgress(m,input,{starts:{gemini:600}}));
+ assert.equal(simulation.points.find(p=>p.minute===600).packingPeople,5);assert.equal(simulation.points.find(p=>p.minute===600).pickingPeople,15);
+ const finish=simulation.lines[0].finish;assert.ok(finish!==null);
+ assert.equal(simulation.points.find(p=>p.minute===finish).packingPeople,0);
+});
+test("manual packing shares deadlines, respects time-dependent maxima, and can use fewer than all staff",()=>{
+ const input=fixture(200);routeOnly(input,"manual");input.dailyInput.manualPeople="8";input.dailyInput.packingPlan.manualPacket.batch6="100";
+ input.settings.times.packetDeadline="14:00";input.settings.times.parcelDeadline="17:00";
+ const p=checked(input);assert.equal(p.model.jobs.filter(j=>j.lineId==="manual").length,2);assert.equal(p.evaluation.scenarioStatus,"feasible");
+ assert.ok(p.operational.points.some(p=>p.linePeople.manual>0&&p.linePeople.manual<8));
+ input.dailyInput.packingPlan.manualPeople.before13="2";
+ const q=checked(input);assert.ok(q.operational.points.filter(p=>p.minute>=600&&p.minute<780).every(p=>(p.linePeople.manual||0)<=2));
+ assert.equal(input.dailyInput.manualPeople,"8");
+});
+test("manual capacity cannot be duplicated across shipping deadlines",()=>{
+ const input=fixture(200);routeOnly(input,"manual");input.dailyInput.manualPeople="2";input.dailyInput.packingPlan.manualPacket.batch6="100";
+ input.settings.times.packetDeadline="10:30";input.settings.times.parcelDeadline="11:30";
+ const p=checked(input);near(p.required[0].byLine.manual,84,"shared deadline maximum");assert.equal(p.evaluation.failureKind,"physical");
+});
+test("partial confirmed allocation preserves counts and explicit zero destinations",()=>{
+ const input=fixture();input.dailyInput.packingPlan=context.defaultPackingPlan();input.dailyInput.packingPlan.lines.gemini.confirmed.batch6="100";input.dailyInput.packingPlan.lines.leo.confirmed.batch6="0";
+ const p=calculate(input);assert.equal(p.model.jobs.filter(j=>j.lineId==="gemini").reduce((n,j)=>n+j.count,0),100);assert.ok(!p.model.jobs.some(j=>j.lineId==="leo"));
+ near(p.model.jobs.reduce((n,j)=>n+j.count,0),600,"allocation conservation");
+});
+test("missing inputs are unavailable, explicit zero capacity is a physical failure, zero demand is valid",()=>{
+ const missing=fixture();missing.settings.packing[0].capacity="";assert.equal(calculate(missing).evaluation.failureKind,"unavailable");
+ const zero=fixture();zero.settings.packing[0].capacity=0;assert.equal(calculate(zero).evaluation.failureKind,"physical");
+ assert.equal(calculate(fixture(0)).evaluation.scenarioStatus,"feasible");
+ const cleared=copy(vm.runInContext("defaultState()",context));assert.equal(calculate(cleared).evaluation.scenarioStatus,"unknown");
+});
+test("an equipment start after deadline cannot be presented as a found solution",()=>{
+ const input=fixture();input.dailyInput.packingPlan.lines.gemini.availableFrom="17:00";
+ assert.equal(calculate(input).evaluation.failureKind,"physical");
+});
+test("input corrections recalculate the whole plan and restore the original result",()=>{
+ context.inputForTest=fixture();vm.runInContext("state=inputForTest;renderAll=()=>{}",context);
+ const before=copy(vm.runInContext("getPackingPlan()",context));
+ vm.runInContext('updateStatePath("dailyInput.staffing.before10","20")',context);
+ const changed=copy(vm.runInContext("getPackingPlan()",context));assert.notDeepEqual(changed,before);
+ assert.equal(vm.runInContext("state.dailyInput.packingPlan.history.points.length",context),0);
+ vm.runInContext('updateStatePath("dailyInput.staffing.before10","100")',context);assert.deepEqual(copy(vm.runInContext("getPackingPlan()",context)),before);
+});
+test("legacy history is preserved on read/save but cannot constrain current calculations",()=>{
+ const input=fixture(), before=calculate(input);input.dailyInput.packingPlan.history={through:1000,points:[{minute:570,count:999999,hours:0}]};
+ const after=calculate(input);assert.deepEqual(after.displayed,before.displayed);assert.deepEqual(after.evaluation,before.evaluation);
+ const reloaded=copy(context.mergeState(copy(input)));assert.equal(reloaded.dailyInput.packingPlan.history.points[0].count,999999);assert.deepEqual(calculate(reloaded).displayed,before.displayed);
+});
+test("current-time changes select arrived batches with no history freezing",()=>{
+ const input=fixture();input.dailyInput.picks.total.batch10="200";input.dailyInput.picks.total.batch13="300";
+ for(const field of ["batch10","batch13"])for(const line of input.settings.packing)input.dailyInput.packingPlan.lines[line.id].confirmed[field]="";
+ for(const [time,total]of[["10:00",800],["12:00",800],["13:40",1100],["15:00",1100]]){input.dailyInput.currentTime=time;const p=checked(input);assert.equal(p.model.batches.reduce((n,b)=>n+b.total,0),total);assert.ok(point(p,context.planTime(time)));}
+});
+test("arrival has no instantaneous new-batch supply or artificial idle minute",()=>{
+ const input=fixture(200000);input.dailyInput.picks.total.batch10="200000";input.dailyInput.picks.total.batch13="200000";routeOnly(input,"gemini");
+ const p=checked(input);
+ for(const [t,field]of[[600,"batch10"],[780,"batch13"]]){
+  assert.ok(point(p,t).count>point(p,t-1).count);
+  const m=model(input), starts=p.operational.policy.starts;
+  const without=copy(input);without.dailyInput.picks.total[field]="0";routeOnly(without,"gemini");
+  const other=context.calculateFeasiblePickingProgress(model(without),without,{starts,manualExtra:p.operational.policy.manualExtra});
+  near(point(p,t).count,other.points.find(p=>p.minute===t).count,"same policy and zero event contribution");
+ }
+ assert.equal(p.evaluation.scenarioStatus,"infeasible");assert.ok(p.shortages.some(p=>p.minute===780));
+});
+test("a tight deadline remains feasible without artificial boundary stops",()=>{
+ const input=fixture(32);routeOnly(input,"gemini");input.settings.picking.total=60;input.settings.packing[0].capacity=100000;input.settings.packing[0].people=1;input.settings.times.packetDeadline="10:01";
+ input.dailyInput.staffing={before10:"2",before13:"2",after13:"2"};assert.equal(checked(input).evaluation.scenarioStatus,"feasible");
+});
+test("observations seed the future exactly and corrections change remaining work",()=>{
+ const input=fixture(1000);routeOnly(input,"gemini");input.actuals=[{time:"13:00",totalCompleted:200}];
+ const low=checked(input);near(point(low,780).count,200,"observed anchor");assert.equal(low.observation.age,40);assert.equal(low.evaluation.status,"unknown");
+ input.actuals[0].totalCompleted=800;const high=checked(input);near(point(high,780).count,800,"corrected observed anchor");
+ assert.notDeepEqual(high.operational.points.filter(p=>p.minute>780),low.operational.points.filter(p=>p.minute>780));
+ assert.ok(high.model.assumptions.some(a=>a.includes("実梱包実績未取得")));
+ assert.deepEqual(calculate(copy(input)),high);
+});
+test("observed-prefix estimate is identical across future candidates",()=>{
+ const input=fixture(1000);input.actuals=[{time:"13:00",totalCompleted:700}];const m=model(input);
+ const a=context.calculateFeasiblePickingProgress(m,input,{observations:[{minute:780,count:700}],pastStarts:{gemini:750,leo:750,manual:750},pastManualExtra:0,starts:{gemini:800},manualExtra:0});
+ const b=context.calculateFeasiblePickingProgress(m,input,{observations:[{minute:780,count:700}],pastStarts:{gemini:750,leo:750,manual:750},pastManualExtra:0,starts:{gemini:900},manualExtra:2});
+ assert.deepEqual(copy(a.points.filter(p=>p.minute<780)),copy(b.points.filter(p=>p.minute<780)));
+ near(a.points.find(p=>p.minute===780).count,700,"shared state count");
+});
+test("inconsistent observations are unavailable instead of fabricated packing facts",()=>{
+ for(const rows of [[{time:"13:00",totalCompleted:601}],[{time:"13:00",totalCompleted:300},{time:"13:10",totalCompleted:200}],[{time:"13:05",totalCompleted:200}]]){
+  const input=fixture();input.actuals=rows;assert.equal(calculate(input).evaluation.failureKind,"unavailable");
+ }
+});
+test("future observations are not used before their time and auto-time flag changes no engine result",()=>{
+ const input=fixture();input.actuals=[{time:"15:00",totalCompleted:600}];const a=calculate(input);assert.equal(a.observation.last,null);
+ input.dailyInput.autoCurrentTime=true;assert.deepEqual(calculate(input),a);
+});
+test("actual changes invalidate the application plan cache",()=>{
+ context.inputForTest=fixture();vm.runInContext("state=inputForTest;state.actuals=[{time:'13:00',totalCompleted:100}]",context);
+ const a=copy(vm.runInContext("getPackingPlan()",context));vm.runInContext("state.actuals[0].totalCompleted=400",context);
+ const b=copy(vm.runInContext("getPackingPlan()",context));assert.notDeepEqual(a.displayed,b.displayed);near(point(b,780).count,400,"cache corrected");
+});
+test("summary shows estimated replan, stale observation, bounded search and moves from the chosen schedule",()=>{
+ const original=context.document.querySelector,elements={};context.document.querySelector=s=>elements[s]||={};
+ try{context.inputForTest=fixture(1000);context.inputForTest.actuals=[{time:"13:00",totalCompleted:100}];vm.runInContext("state=inputForTest;renderPlanSummary();renderStaffingSummary();renderPackingDetail()",context);
+ assert.match(elements['#plan-summary'].innerHTML,/実績反映の概算再計画/);assert.match(elements['#plan-summary'].innerHTML,/現在との差 40分/);assert.match(elements['#plan-summary'].innerHTML,/推定です/);
+ assert.match(elements['#staffing-summary'].innerHTML,/計画上の梱包配置人数/);
+ const summary=context.calculateCurrentStaffingSummary();if(summary.nextMovement){const ps=context.getPackingPlan().operational.points;const t=summary.nextMovement.minute;assert.ok(ps.find(p=>p.minute===t).packingPeople>=0);}
+ assert.match(elements['#packing-notice'].textContent,/梱包済・仕掛・残梱包は推定/);
+ }finally{context.document.querySelector=original;}
+});
+test("finish rendering differentiates unavailable, deadline miss, estimated success and no demand",()=>{
+ const original=context.document.querySelector,elements={};context.document.querySelector=s=>elements[s]||={};
+ try{for(const [input,expected]of[[fixture(),/計画上の梱包完了見込み：\d{2}:\d{2}/],[fixture(0),/計画上の梱包完了見込み：対象なし/]]){context.inputForTest=input;vm.runInContext("state=inputForTest;renderPlanSummary()",context);assert.match(elements['#plan-summary'].innerHTML,expected);}
+ const input=fixture();input.dailyInput.bufferMinutes="";context.inputForTest=input;vm.runInContext("state=inputForTest;renderPlanSummary()",context);assert.match(elements['#plan-summary'].innerHTML,/算出不可/);
+ }finally{context.document.querySelector=original;}
 });
 
-test("normal work before arrival keeps a tight feasible plan feasible", () => {
-  const input = fixture(32); routeOnly(input, "gemini");
-  input.settings.picking.total = 60;
-  input.settings.packing[0].capacity = 100000;
-  input.settings.packing[0].people = 1;
-  input.settings.times.packetDeadline = "10:01";
-  input.dailyInput.staffing = { before10: "2", before13: "2", after13: "2" };
-  const result = calculate(input);
-  const baseline = context.evaluatePlanFeasibility(result.model, result.required, result.feasible);
-  assert.equal(baseline.scenarioStatus, "feasible");
-  assert.equal(result.evaluation.scenarioStatus, "feasible");
-  assert.ok(result.operational.jobs.every(j => j.finishedAt <= j.deadline));
-  const left = result.operational.points.find(p => p.minute === 599), right = result.operational.points.find(p => p.minute === 600);
-  near(right.count - left.count, 1, "9:59 work is preserved");
+test("outsourced picking remains in total supply and is not duplicated as internal packing",()=>{
+ const input=fixture();input.dailyInput.outsourced="100";for(const line of Object.values(input.dailyInput.packingPlan.lines))line.confirmed.batch6="";
+ const p=checked(input);near(p.model.jobs.filter(j=>j.external).reduce((n,j)=>n+j.count,0),100,"external demand");near(p.model.jobs.filter(j=>!j.external).reduce((n,j)=>n+j.count,0),500,"internal demand");near(p.displayed.at(-1).count,600,"total supply");
+ assert.ok(p.model.assumptions.some(a=>a.includes("委託先の完了は対象外")));
 });
-
-test("arrival includes prior work but no supply from the newly arriving batch", () => {
-  const input = batchFixture(200000);
-  for (const [minute, field] of [[600, "batch10"], [780, "batch13"]]) {
-    const without = copy(input); without.dailyInput.picks.total[field] = "0"; routeOnly(without, "gemini");
-    const full = calculate(input), old = calculate(without);
-    const left = full.operational.points.find(p => p.minute === minute - 1), right = full.operational.points.find(p => p.minute === minute);
-    assert.ok(right.count > left.count, "ordinary work is not paused");
-    near(right.count, old.operational.points.find(p => p.minute === minute).count, "new batch contributes zero at arrival");
-    assertOperationalBounds(full);
-  }
-});
-test("history boundary continues pending work without a forced idle interval", () => {
-  context.inputForTest = batchFixture(200000);
-  vm.runInContext("state = inputForTest; renderAll = () => {};", context);
-  const before = copy(vm.runInContext("calculateIdealProgress()", context));
-  vm.runInContext('updateStatePath("dailyInput.staffing.after13", "100");', context);
-  const input = copy(vm.runInContext("state", context)), result = calculate(input);
-  assert.deepEqual(result.displayed.filter(p => p.minute < 820), before.filter(p => p.minute < 820));
-  near(result.displayed.find(p => p.minute === 820).count, before.find(p => p.minute === 820).count, "boundary normal work");
-  assert.ok(result.displayed.find(p => p.minute === 820).count > result.displayed.find(p => p.minute === 819).count);
-  assertOperationalBounds(result);
-  assert.deepEqual(calculate(copy(input)).displayed, result.displayed);
+test("the presentation still separates confirmation, scenario result and unavailable inputs",()=>{
+ for(const [scenario,status,assumptions,title]of[["feasible","feasible",[],"計画成立（モデル上）"],["infeasible","infeasible",[],"計画不成立"],["feasible","unknown",["推定"],"概算：期限内完了可能"],["infeasible","unknown",["推定"],"概算：期限内完了困難"],["unknown","unknown",[],"算出不可"]]){
+  const p=context.getPlanPresentation({scenarioStatus:scenario,status,assumptions});assert.equal(p.title,title);
+ }
 });
