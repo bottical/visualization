@@ -242,14 +242,10 @@ function calculateFeasiblePickingProgress(model, input, options = {}) {
       wipByLine: Object.fromEntries(model.lines.map(line => [line.id, byLine[line.id] - packedByLine[line.id]])) });
     if (minute === end) break;
     let personHours = available / 60;
-    // Reuse the full supply/WIP/crew simulation for the operational target.
-    // A receiving boundary reserves the preceding one-minute interval. This
-    // is a conservative plan policy, not a replacement of a plotted point.
-    const receiving = options.continuous && model.times.slice(1).includes(minute + 1);
+    // Replay only saved intervals. At arrivals and at the history boundary,
+    // normal work continues; new jobs enter only at their release minute.
     const nextSaved = saved.get(minute + 1);
-    const atBoundary = options.continuous && boundary && minute + 1 === history.through;
-    let pickBudget = receiving ? 0 : nextSaved ? Math.max(0, nextSaved.count - picked) : atBoundary ? Math.max(0, boundary.count - picked) : Infinity;
-    if (receiving || atBoundary) personHours = 0;
+    let pickBudget = nextSaved ? Math.max(0, nextSaved.count - picked) : Infinity;
     // FIFO batches with their own mix productivity. A later batch never
     // changes productivity, allocation, or supply in a historical interval.
     for (const batch of model.batches.filter(batch => batch.release <= minute)) {
@@ -262,7 +258,6 @@ function calculateFeasiblePickingProgress(model, input, options = {}) {
       if (personHours < PLAN_EPSILON) break;
     }
     if (options.continuous && nextSaved && Math.abs(picked - nextSaved.count) > PLAN_EPSILON) add("履歴条件不整合：保存済み目標を現在の人員・需要・初期仕掛で再現できません");
-    if (atBoundary && Math.abs(picked - boundary.count) > PLAN_EPSILON) add("履歴条件不整合：履歴境界の累計を現在の計画で再現できません");
     for (const line of running) {
       let capacity = calculatePackingCapacity(line, minute, model, input) / 60;
       const stats = lineStats.get(line.id), pending = live(line).sort((a, b) => a.deadline - b.deadline || a.release - b.release);

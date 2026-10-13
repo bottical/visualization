@@ -350,7 +350,7 @@ function assertOperationalBounds(result) {
 test("10:00 and 13:00 targets use continuous supply plans and remain feasible with sufficient resources", () => {
   const result = calculate(batchFixture());
   for (const minute of [600, 780]) {
-    near(result.displayed.find(p => p.minute === minute).count, result.displayed.find(p => p.minute === minute - 1).count, "arrival anchor");
+    near(result.displayed.find(p => p.minute === minute).count, result.feasible.points.find(p => p.minute === minute).count, "normal arrival work");
     assert.ok(result.displayed.find(p => p.minute === minute + 1).count > result.displayed.find(p => p.minute === minute).count);
   }
   assertOperationalBounds(result);
@@ -361,7 +361,7 @@ test("large additions retain the theoretical jump and failure while target and s
   const input = batchFixture(); input.dailyInput.picks.total.batch13 = "200000"; routeOnly(input, "gemini");
   const result = calculate(input);
   assert.ok(result.required.find(p => p.minute === 780).count > result.required.find(p => p.minute === 779).count);
-  near(result.displayed.find(p => p.minute === 780).count, result.displayed.find(p => p.minute === 779).count, "failed arrival anchor");
+  assertOperationalBounds(result);
   assert.equal(result.evaluation.scenarioStatus, "infeasible");
   const shortage = result.shortages.find(p => p.minute === 780);
   near(shortage.count, shortage.required - shortage.target, "shortage");
@@ -388,7 +388,7 @@ test("edits, reload, and moving current time retain a continuous history boundar
   vm.runInContext('updateStatePath("dailyInput.staffing.after13", "80");', context);
   const input = copy(vm.runInContext("state", context)), result = calculate(input);
   assert.deepEqual(result.displayed.filter(p => p.minute < 820), before.filter(p => p.minute < 820));
-  near(result.displayed.find(p => p.minute === 820).count, result.displayed.find(p => p.minute === 819).count, "history anchor");
+  assertOperationalBounds(result);
   assert.deepEqual(calculate(copy(input)).displayed, result.displayed);
   input.dailyInput.currentTime = "12:50";
   assert.deepEqual(calculate(input).displayed.filter(p => p.minute < 780), result.displayed.filter(p => p.minute < 780));
@@ -405,7 +405,7 @@ test("legacy frozen requirements remain saved and incompatible history never bec
   assert.ok(result.evaluation.reasons.some(r => r.includes("履歴条件不整合")));
   assert.equal(result.evaluation.scenarioStatus, "infeasible");
 });
-test("receiving-boundary loss is evaluated rather than hidden, and shortage quantities render", () => {
+test("theoretical shortage quantities and failure remain visible", () => {
   const input = batchFixture(); input.dailyInput.picks.total.batch13 = "200000"; routeOnly(input, "gemini");
   const original = context.document.querySelector, box = {};
   context.document.querySelector = s => s === "#plan-summary" ? box : original(s);
@@ -417,7 +417,7 @@ test("receiving-boundary loss is evaluated rather than hidden, and shortage quan
   } finally { context.document.querySelector = original; }
 });
 
-test("a tight feasible baseline cannot be declared feasible after the operational boundary loses supply", () => {
+test("normal work before arrival keeps a tight feasible plan feasible", () => {
   const input = fixture(32); routeOnly(input, "gemini");
   input.settings.picking.total = 60;
   input.settings.packing[0].capacity = 100000;
@@ -427,6 +427,32 @@ test("a tight feasible baseline cannot be declared feasible after the operationa
   const result = calculate(input);
   const baseline = context.evaluatePlanFeasibility(result.model, result.required, result.feasible);
   assert.equal(baseline.scenarioStatus, "feasible");
-  assert.equal(result.evaluation.scenarioStatus, "infeasible");
-  assert.ok(result.operational.jobs.some(j => j.finishedAt === null));
+  assert.equal(result.evaluation.scenarioStatus, "feasible");
+  assert.ok(result.operational.jobs.every(j => j.finishedAt <= j.deadline));
+  const left = result.operational.points.find(p => p.minute === 599), right = result.operational.points.find(p => p.minute === 600);
+  near(right.count - left.count, 1, "9:59 work is preserved");
+});
+
+test("arrival includes prior work but no supply from the newly arriving batch", () => {
+  const input = batchFixture(200000);
+  for (const [minute, field] of [[600, "batch10"], [780, "batch13"]]) {
+    const without = copy(input); without.dailyInput.picks.total[field] = "0"; routeOnly(without, "gemini");
+    const full = calculate(input), old = calculate(without);
+    const left = full.operational.points.find(p => p.minute === minute - 1), right = full.operational.points.find(p => p.minute === minute);
+    assert.ok(right.count > left.count, "ordinary work is not paused");
+    near(right.count, old.operational.points.find(p => p.minute === minute).count, "new batch contributes zero at arrival");
+    assertOperationalBounds(full);
+  }
+});
+test("history boundary continues pending work without a forced idle interval", () => {
+  context.inputForTest = batchFixture(200000);
+  vm.runInContext("state = inputForTest; renderAll = () => {};", context);
+  const before = copy(vm.runInContext("calculateIdealProgress()", context));
+  vm.runInContext('updateStatePath("dailyInput.staffing.after13", "100");', context);
+  const input = copy(vm.runInContext("state", context)), result = calculate(input);
+  assert.deepEqual(result.displayed.filter(p => p.minute < 820), before.filter(p => p.minute < 820));
+  near(result.displayed.find(p => p.minute === 820).count, before.find(p => p.minute === 820).count, "boundary normal work");
+  assert.ok(result.displayed.find(p => p.minute === 820).count > result.displayed.find(p => p.minute === 819).count);
+  assertOperationalBounds(result);
+  assert.deepEqual(calculate(copy(input)).displayed, result.displayed);
 });
