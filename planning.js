@@ -196,35 +196,49 @@ function calculateRequiredPickingProgress(model, input) {
 function calculateFeasiblePickingProgress(model, input, options = {}) {
   if (model.errors.length) return { points: [], jobs: [], reasons: [], lines: [] };
   const jobs = model.jobs.map(job => ({ ...job, supplied: 0, packed: 0, finishedAt: null }));
-  const history = options.continuous ? model.plan.history : { through: null, points: [] };
-  const saved = new Map(history.points.filter(p => p.minute < history.through).map(p => [p.minute, p]));
-  const boundary = history.points.filter(p => p.minute < history.through).at(-1);
-  let seedRemaining = saved.get(model.times[0])?.count ?? Infinity;
+  const observations = options.observations || [];
+  const anchor = observations.at(-1)?.minute ?? model.times[0];
+  const observedTarget = minute => {
+    if (!observations.length || minute > anchor) return null;
+    const initial = model.lines.reduce((n, l) => n + l.initialWip, 0);
+    let left = { minute: model.times[0], count: Math.min(initial, observations[0].count) };
+    for (const right of observations) {
+      if (minute <= right.minute) return right.minute === left.minute ? right.count : left.count + (right.count - left.count) * (minute - left.minute) / (right.minute - left.minute);
+      left = right;
+    }
+    return observations.at(-1).count;
+  };
   const reasons = [], add = text => { if (!reasons.includes(text)) reasons.push(text); };
   for (const line of model.lines) {
     let wip = line.initialWip;
     for (const job of jobs.filter(job => job.lineId === line.id && job.field === "batch6").sort((a, b) => a.deadline - b.deadline)) {
-      const amount = Math.min(wip, job.count, seedRemaining); job.supplied = amount; wip -= amount; seedRemaining -= amount;
+      const amount = Math.min(wip, job.count); job.supplied = amount; wip -= amount;
     }
   }
   let picked = jobs.reduce((n, job) => n + job.supplied, 0);
-  if (saved.has(model.times[0]) && Math.abs(picked - saved.get(model.times[0]).count) > PLAN_EPSILON) add("履歴条件不整合：開始時の保存累計と初期仕掛が一致しません");
-  if (boundary && boundary.count > model.batches.reduce((n, b) => n + b.total, 0) + PLAN_EPSILON) add("履歴条件不整合：保存累計が現在の対象件数を超えています（履歴は保持）");
-  const points = [], active = new Set(), lineStats = new Map(model.lines.map(line => [line.id, { id: line.id, firstStart: null, finish: null, starvedMinutes: 0, staffDelayedMinutes: 0 }]));
+  const points = [], active = new Set(), lineStats = new Map(model.lines.map(line => [line.id, { id: line.id, firstStart: null, finish: null, starvedMinutes: 0, staffDelayedMinutes: 0, starts: 0 }]));
   const end = Math.max(model.times[0], model.current, ...jobs.map(job => job.deadline));
   for (let minute = model.times[0]; minute <= end; minute++) {
     const staffing = calculateStaffingCapacity(minute, model, input);
     let available = Math.max(0, staffing.total - staffing.other), packingPeople = 0;
-    if (staffing.other > staffing.total) add("人員不足：その他拘束人数が投入可能総人数を超過");
+    if (minute >= anchor && staffing.other > staffing.total) add("人員不足：その他拘束人数が投入可能総人数を超過");
     const live = line => jobs.filter(job => job.lineId === line.id && job.release <= minute && job.deadline > minute && job.packed < job.count - PLAN_EPSILON);
+    const policy = minute < anchor && options.pastStarts ? options.pastStarts : options.starts || {};
     const candidates = model.lines.filter(line => minute >= line.start && live(line).length &&
-      (active.has(line.id) || live(line).some(job => job.supplied > job.packed + PLAN_EPSILON))).sort((a, b) => {
-      const activeOrder = Number(active.has(b.id)) - Number(active.has(a.id));
-      return activeOrder || Math.min(...live(a).map(job => job.deadline)) - Math.min(...live(b).map(job => job.deadline));
-    });
+      (active.has(line.id) || minute >= (policy[line.id] ?? line.start)) &&
+      (active.has(line.id) || live(line).some(job => job.supplied > job.packed + PLAN_EPSILON))).sort((a, b) =>
+      Math.min(...live(a).map(job => job.deadline)) - Math.min(...live(b).map(job => job.deadline)) || a.id.localeCompare(b.id));
     const running = [];
     for (const line of candidates) {
-      const people = line.id === "manual" ? staffing.manual : line.people;
+      let people = line.people;
+      if (line.id === "manual") {
+        const due = live(line), firstDeadline = Math.min(...due.map(j => j.deadline));
+        const remaining = due.filter(j => j.deadline <= firstDeadline).reduce((n, j) => n + j.count - j.packed, 0);
+        const wip = due.reduce((n, j) => n + j.supplied - j.packed, 0);
+        const needed = Math.ceil(remaining * 60 / Math.max(1, firstDeadline - minute) / line.capacity);
+        const wipPeople = Math.ceil(wip * 60 / line.capacity);
+        people = Math.min(staffing.manual ?? 0, available, wipPeople, Math.max(1, needed + (minute < anchor && options.pastStarts ? options.pastManualExtra ?? 0 : options.manualExtra ?? 0)));
+      }
       // A machine is either fully staffed at fixed capacity or stopped.
       if (!(people > 0) || !(line.capacity > 0)) continue;
       if (people > available) {
@@ -233,19 +247,22 @@ function calculateFeasiblePickingProgress(model, input, options = {}) {
       }
       // Reserve a planned line's full crew during its operating interval,
       // including supply starvation; otherwise picking gets fictitious staff.
-      available -= people; packingPeople += people; running.push(line);
+      available -= people; packingPeople += people; running.push({ ...line, assignedPeople: people });
     }
     const byLine = Object.fromEntries(model.lines.map(line => [line.id, jobs.filter(job => job.lineId === line.id).reduce((n, job) => n + job.supplied, 0)]));
     const packedByLine = Object.fromEntries(model.lines.map(line => [line.id, jobs.filter(job => job.lineId === line.id).reduce((n, job) => n + job.packed, 0)]));
-    points.push({ minute, count: picked, pickingPeople: available, packingPeople, otherPeople: staffing.other, totalPeople: staffing.total,
+    const pickingPeople = jobs.some(j => j.release <= minute && j.supplied < j.count - PLAN_EPSILON) ? available : 0;
+    points.push({ minute, count: picked, pickingPeople, availablePeople: available, packingPeople, otherPeople: staffing.other, totalPeople: staffing.total,
+      linePeople: Object.fromEntries(running.map(line => [line.id, line.id === "manual" ? line.assignedPeople : line.people])),
       activeLines: running.map(line => line.id), suppliedByLine: byLine, packedByLine,
       wipByLine: Object.fromEntries(model.lines.map(line => [line.id, byLine[line.id] - packedByLine[line.id]])) });
     if (minute === end) break;
     let personHours = available / 60;
-    // Replay only saved intervals. At arrivals and at the history boundary,
-    // normal work continues; new jobs enter only at their release minute.
-    const nextSaved = saved.get(minute + 1);
-    let pickBudget = nextSaved ? Math.max(0, nextSaved.count - picked) : Infinity;
+    const target = observedTarget(minute + 1);
+    let pickBudget = target === null ? Infinity : Math.max(0, target - picked);
+    // Observed picking is factual. Its unknown order is estimated FIFO with
+    // proportional destinations; historical model capacity is not imposed on it.
+    if (target !== null) personHours = Infinity;
     // FIFO batches with their own mix productivity. A later batch never
     // changes productivity, allocation, or supply in a historical interval.
     for (const batch of model.batches.filter(batch => batch.release <= minute)) {
@@ -257,9 +274,8 @@ function calculateFeasiblePickingProgress(model, input, options = {}) {
       picked += quantity; personHours -= quantity / batch.average; pickBudget -= quantity;
       if (personHours < PLAN_EPSILON) break;
     }
-    if (options.continuous && nextSaved && Math.abs(picked - nextSaved.count) > PLAN_EPSILON) add("履歴条件不整合：保存済み目標を現在の人員・需要・初期仕掛で再現できません");
     for (const line of running) {
-      let capacity = calculatePackingCapacity(line, minute, model, input) / 60;
+      let capacity = (line.id === "manual" ? line.capacity * line.assignedPeople : calculatePackingCapacity(line, minute, model, input)) / 60;
       const stats = lineStats.get(line.id), pending = live(line).sort((a, b) => a.deadline - b.deadline || a.release - b.release);
       let completed = 0;
       for (const job of pending) {
@@ -267,7 +283,7 @@ function calculateFeasiblePickingProgress(model, input, options = {}) {
         job.packed += amount; capacity -= amount; completed += amount;
         if (job.packed >= job.count - PLAN_EPSILON) job.finishedAt = minute + 1;
       }
-      if (completed > PLAN_EPSILON) { stats.firstStart ??= minute; active.add(line.id); }
+      if (completed > PLAN_EPSILON) { stats.firstStart ??= minute; if (!active.has(line.id)) stats.starts++; active.add(line.id); }
       if (capacity > PLAN_EPSILON && pending.some(job => job.packed < job.count - PLAN_EPSILON)) stats.starvedMinutes++;
       if (!jobs.some(job => job.lineId === line.id && job.release <= minute && job.packed < job.count - PLAN_EPSILON)) { active.delete(line.id); stats.finish = minute + 1; }
     }
@@ -285,7 +301,7 @@ function calculateFeasiblePickingProgress(model, input, options = {}) {
       else add(`仕掛供給不足：${line.name}は完了期限までに必要量を処理できません`);
     }
   }
-  return { points, jobs, reasons, lines: [...lineStats.values()] };
+  return { points, jobs, reasons, lines: [...lineStats.values()], anchor, policy: { starts: { ...options.starts }, manualExtra: options.manualExtra ?? 0 } };
 }
 
 function evaluatePlanFeasibility(model, required, feasible) {
@@ -293,7 +309,7 @@ function evaluatePlanFeasibility(model, required, feasible) {
   const reasons = [...feasible.reasons];
   const violations = [];
   const possibleByMinute = new Map(feasible.points.map(point => [point.minute, point]));
-  required.forEach(point => {
+  required.filter(point => point.minute >= (feasible.anchor ?? model.times[0])).forEach(point => {
     const possible = possibleByMinute.get(point.minute);
     if (possible && point.count > possible.count + PLAN_EPSILON) violations.push({ minute: point.minute, required: point.count, feasible: possible.count });
     for (const [id, count] of Object.entries(point.byLine || {})) {
@@ -317,33 +333,95 @@ function getPlanPresentation(evaluation) {
   const result = possible ? "概算：期限内完了可能" : "概算：期限内完了困難";
   return { title: confirmed ? possible ? "計画成立（モデル上）" : "計画不成立" : result,
     result, confirmation, tone: possible ? confirmed ? "good" : "warn" : "bad",
-    description: possible ? "現在の入力条件と標準仮定による試算では、対象の梱包完了期限に間に合う計画です。" : "現在の入力条件・人員・処理能力と配置方針では、対象の梱包完了期限に間に合わない見込みです。"
+    description: possible ? "人員配置候補を1分単位で検証し、対象の梱包完了期限に間に合う計画を得ました。" : evaluation.failureKind === "physical" ? "定義済みの設備能力・稼働時間では、対象の梱包期限までの処理能力が不足します。" : "今回の候補探索では期限内完了可能な配置を発見できませんでした。別の配置で解決できる可能性があります。"
   };
 }
-function calculatePackingPlan(input) {
-  const model = calculatePackingDemand(input), required = calculateRequiredPickingProgress(model, input), feasible = calculateFeasiblePickingProgress(model, input);
-  const operational = calculateFeasiblePickingProgress(model, input, { continuous: true });
-  const history = model.plan.history;
-  const frozen = history.points.filter(p => p.minute < history.through);
-  const lastFrozen = frozen.at(-1)?.count ?? 0;
-  const displayed = model.errors.length ? [] : [...frozen, ...operational.points.filter(p => history.through === null || p.minute >= history.through).map(p => {
-    const batches = model.batches.filter(batch => batch.release <= p.minute);
-    const total = batches.reduce((n, batch) => n + batch.total, 0), hours = batches.reduce((n, batch) => n + batch.hours, 0);
-    // Preserve incompatible legacy history explicitly; never invent a jump to
-    // catch the new simulation. Its inconsistency remains a failure reason.
-    const count = Math.max(lastFrozen, p.count);
-    return { minute: p.minute, count, hours: total > 0 ? count * hours / total : 0 };
-  })];
-  const baseline = evaluatePlanFeasibility(model, required, feasible);
-  const evaluation = evaluatePlanFeasibility(model, required, operational);
-  // Continuity cannot turn any original theoretical failure into success.
-  evaluation.reasons = [...new Set([...baseline.reasons, ...evaluation.reasons])];
-  if (!model.errors.length && evaluation.reasons.length) {
-    evaluation.scenarioStatus = "infeasible";
-    evaluation.status = model.assumptions.length ? "unknown" : "infeasible";
+function readPlanningObservations(input, model) {
+  const observations = [], errors = [];
+  if (model.errors.length) return { observations, errors };
+  let previous = null;
+  for (const row of input.actuals || []) {
+    if (row.time === "" || row.totalCompleted === "") break;
+    const minute = planTime(row.time), count = planInteger(row.totalCompleted);
+    if (minute === null || count === null || minute < model.times[0] || (minute - model.times[0]) % 10 !== 0 || (previous && (minute <= previous.minute || count < previous.count))) {
+      errors.push("ピッキング実績の時刻・累計・入力順序を確認してください"); break;
+    }
+    previous = { minute, count };
+    if (minute > model.current) continue;
+    const arrived = model.batches.filter(b => b.release < minute || minute === model.times[0] && b.release === minute).reduce((n, b) => n + b.total, 0);
+    const initial = model.lines.reduce((n, l) => n + l.initialWip, 0);
+    if (count > arrived || count < initial || minute === model.times[0] && count !== initial) { errors.push("ピッキング実績と到来済み対象件数・初期仕掛が不整合です"); break; }
+    observations.push({ minute, count });
   }
+  return { observations, errors };
+}
+function calculateLatestPackingStarts(model, input) {
+  return Object.fromEntries(model.lines.map(line => {
+    const jobs = model.jobs.filter(j => j.lineId === line.id), deadlines = [...new Set(jobs.map(j => j.deadline))];
+    const starts = deadlines.map(deadline => {
+      const due = jobs.filter(j => j.deadline <= deadline).reduce((n, j) => n + j.count, 0);
+      let capacity = 0;
+      for (let minute = deadline - 1; minute >= line.start; minute--) {
+        capacity += calculatePackingCapacity(line, minute, model, input) / 60;
+        if (capacity + PLAN_EPSILON >= due) return minute;
+      }
+      return line.start;
+    });
+    return [line.id, starts.length ? Math.min(...starts) : line.start];
+  }));
+}
+function searchPackingAllocation(model, input, options = {}) {
+  if (model.errors.length) return { ...calculateFeasiblePickingProgress(model, input), search: { tested: 0, limit: 160, outcome: "unavailable" } };
+  const required = calculateRequiredPickingProgress(model, input), latest = calculateLatestPackingStarts(model, input);
+  const relevant = model.lines.filter(l => model.jobs.some(j => j.lineId === l.id));
+  let best = null, tested = 0;
+  const visited = new Set();
+  const run = (starts, manualExtra = 0) => {
+    const key = JSON.stringify([starts, manualExtra]); if (visited.has(key) || tested >= 160) return null;
+    visited.add(key); tested++;
+    const result = calculateFeasiblePickingProgress(model, input, { ...options, starts, manualExtra });
+    const evaluation = evaluatePlanFeasibility(model, required, result);
+    const missed = result.jobs.filter(j => !j.external).reduce((n, j) => n + Math.max(0, j.count - j.packed), 0);
+    const wait = result.lines.reduce((n, l) => n + l.starvedMinutes, 0);
+    const earlyWork = result.points.reduce((n, p) => n + p.count, 0);
+    const switches = result.lines.reduce((n, l) => n + l.starts, 0);
+    const finishes = result.jobs.filter(j => !j.external && j.finishedAt !== null).map(j => j.deadline - j.finishedAt);
+    const margin = finishes.length ? Math.min(...finishes) : 0;
+    result.score = [evaluation.scenarioStatus === "feasible" ? 0 : 1, missed, wait, -earlyWork, switches, -margin];
+    const better = !best || result.score.some((v, i) => v !== best.score[i] && result.score.slice(0, i).every((x, k) => x === best.score[k]) && v < best.score[i]);
+    if (better) best = result;
+    return result;
+  };
+  for (const offset of [10, 20, 30, 45, 60, 90, 120, 180, 300, 0]) {
+    const starts = Object.fromEntries(relevant.map(l => [l.id, Math.max(l.start, Math.floor((latest[l.id] - offset) / 5) * 5)]));
+    run(starts); if (model.jobs.some(j => j.lineId === "manual")) run(starts, 2);
+  }
+  // Bounded coordinate search, always validated by the same minute simulator.
+  for (let pass = 0; pass < 2; pass++) for (const line of relevant) {
+    const current = { ...best.policy.starts };
+    for (const offset of [0, 10, 30, 60, 120, 240]) run({ ...current, [line.id]: Math.max(line.start, Math.floor((latest[line.id] - offset) / 5) * 5) }, best.policy.manualExtra);
+  }
+  best.search = { tested, limit: 160, stepMinutes: 5, latest, outcome: best.score[0] === 0 ? "found" : "not-found" };
+  return best;
+}
+function calculatePackingPlan(input) {
+  const model = calculatePackingDemand(input);
+  const observed = readPlanningObservations(input, model);
+  model.errors.push(...observed.errors);
+  const initialPlan = searchPackingAllocation(model, input);
+  if (observed.observations.length) model.assumptions.push("ピッキング実績を古いバッチ順・ライン構成比で配分。観測間供給は線形推定、梱包済・仕掛・残梱包は選択した当初計画の再生による推定（実梱包実績未取得）");
+  model.assumptions.push("機械は起動後連続稼働を基本とし、移動・再起動・切替時間は0分で試算");
+  const operational = observed.observations.length ? searchPackingAllocation(model, input, { observations: observed.observations, pastStarts: initialPlan.policy?.starts, pastManualExtra: initialPlan.policy?.manualExtra }) : initialPlan;
+  const required = calculateRequiredPickingProgress(model, input);
+  const displayed = operational.points.map(p => {
+    const batches = model.batches.filter(b => b.release <= p.minute), total = batches.reduce((n, b) => n + b.total, 0), hours = batches.reduce((n, b) => n + b.hours, 0);
+    return { minute: p.minute, count: p.count, hours: total > 0 ? p.count * hours / total : 0 };
+  });
+  const evaluation = evaluatePlanFeasibility(model, required, operational);
+  evaluation.failureKind = model.errors.length ? "unavailable" : evaluation.scenarioStatus === "feasible" ? "none" : operational.reasons.some(r => r.startsWith("梱包能力不足")) ? "physical" : "search-exhausted";
+  evaluation.search = operational.search;
   const targets = new Map(displayed.map(p => [p.minute, p]));
-  const shortages = required.map(p => ({ minute: p.minute, required: p.count, target: targets.get(p.minute)?.count ?? 0,
-    count: Math.max(0, p.count - (targets.get(p.minute)?.count ?? 0)) })).filter(p => p.count > PLAN_EPSILON);
-  return { model, required, feasible, operational, evaluation, displayed, shortages };
+  const shortages = required.map(p => ({ minute: p.minute, required: p.count, target: targets.get(p.minute)?.count ?? 0, count: Math.max(0, p.count - (targets.get(p.minute)?.count ?? 0)) })).filter(p => p.count > PLAN_EPSILON && p.minute >= (operational.anchor ?? model.times[0]));
+  return { model, required, feasible: operational, operational, initialPlan, evaluation, displayed, shortages,
+    observation: { last: observed.observations.at(-1) || null, age: observed.observations.length ? model.current - observed.observations.at(-1).minute : null, estimated: observed.observations.length > 0 } };
 }
