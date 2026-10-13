@@ -325,3 +325,134 @@ test("summary presents estimate outcome and confirmation separately, with assump
     assert.match(box.innerHTML, /別の配置方法で解決できる可能性/);
   } finally { context.document.querySelector = original; }
 });
+
+function batchFixture(count = 300) {
+  const input = fixture(count); input.dailyInput.currentTime = "13:40";
+  input.dailyInput.picks.total.batch10 = String(count);
+  input.dailyInput.picks.total.batch13 = String(count);
+  routeOnly(input, "gemini");
+  return input;
+}
+function assertOperationalBounds(result) {
+  const points = result.operational.points;
+  for (let i = 1; i < points.length; i++) {
+    const left = points[i - 1], right = points[i];
+    const batches = result.model.batches.filter(b => b.release <= left.minute);
+    const maxRate = Math.max(0, ...batches.map(b => b.average));
+    assert.ok(right.count >= left.count - 1e-7);
+    assert.ok(right.count - left.count <= left.pickingPeople * maxRate / 60 + 1e-7);
+    const arrived = result.model.batches.filter(b => b.release <= right.minute).reduce((n, b) => n + b.total, 0);
+    assert.ok(right.count <= arrived + 1e-7);
+    assert.ok(right.pickingPeople + right.packingPeople + right.otherPeople <= right.totalPeople);
+    assert.ok(Object.values(right.wipByLine).every(n => n >= -1e-7));
+  }
+}
+test("10:00 and 13:00 targets use continuous supply plans and remain feasible with sufficient resources", () => {
+  const result = calculate(batchFixture());
+  for (const minute of [600, 780]) {
+    near(result.displayed.find(p => p.minute === minute).count, result.feasible.points.find(p => p.minute === minute).count, "normal arrival work");
+    assert.ok(result.displayed.find(p => p.minute === minute + 1).count > result.displayed.find(p => p.minute === minute).count);
+  }
+  assertOperationalBounds(result);
+  assert.equal(result.evaluation.status, "feasible");
+  assert.ok(result.operational.jobs.every(j => j.finishedAt <= j.deadline));
+});
+test("large additions retain the theoretical jump and failure while target and speed are bounded", () => {
+  const input = batchFixture(); input.dailyInput.picks.total.batch13 = "200000"; routeOnly(input, "gemini");
+  const result = calculate(input);
+  assert.ok(result.required.find(p => p.minute === 780).count > result.required.find(p => p.minute === 779).count);
+  assertOperationalBounds(result);
+  assert.equal(result.evaluation.scenarioStatus, "infeasible");
+  const shortage = result.shortages.find(p => p.minute === 780);
+  near(shortage.count, shortage.required - shortage.target, "shortage");
+  assert.ok(shortage.count > 0);
+  assert.ok(result.evaluation.reasons.some(r => r.includes("梱包能力不足")));
+  assertOperationalBounds(result);
+  context.inputForTest = input;
+  vm.runInContext("state = inputForTest", context);
+  const speed = context.calculateIdealSpeedAt(780);
+  const point = result.operational.points.find(p => p.minute === 780);
+  assert.ok(speed <= point.pickingPeople * Math.max(...result.model.batches.map(b => b.average)) + 1e-7);
+});
+test("future batches cannot alter earlier supply, target, packing or staffing", () => {
+  const a = batchFixture(), b = copy(a);
+  b.dailyInput.picks.total.batch13 = "200000"; routeOnly(b, "gemini");
+  const before = calculate(a), after = calculate(b);
+  assert.deepEqual(after.operational.points.filter(p => p.minute < 780), before.operational.points.filter(p => p.minute < 780));
+  assert.deepEqual(after.displayed.filter(p => p.minute < 780), before.displayed.filter(p => p.minute < 780));
+});
+test("edits, reload, and moving current time retain a continuous history boundary", () => {
+  context.inputForTest = batchFixture();
+  vm.runInContext("state = inputForTest; renderAll = () => {};", context);
+  const before = copy(vm.runInContext("calculateIdealProgress()", context));
+  vm.runInContext('updateStatePath("dailyInput.staffing.after13", "80");', context);
+  const input = copy(vm.runInContext("state", context)), result = calculate(input);
+  assert.deepEqual(result.displayed.filter(p => p.minute < 820), before.filter(p => p.minute < 820));
+  assertOperationalBounds(result);
+  assert.deepEqual(calculate(copy(input)).displayed, result.displayed);
+  input.dailyInput.currentTime = "12:50";
+  assert.deepEqual(calculate(input).displayed.filter(p => p.minute < 780), result.displayed.filter(p => p.minute < 780));
+});
+test("legacy frozen requirements remain saved and incompatible history never becomes a successful plan", () => {
+  const input = batchFixture();
+  input.settings.packing[0].capacity = 0;
+  const old = context.calculateRequiredPickingProgress(context.calculatePackingDemand(input), input);
+  input.dailyInput.packingPlan.history = { through: 821, points: copy(old.filter(p => p.minute < 821)) };
+  const history = copy(input.dailyInput.packingPlan.history), result = calculate(input);
+  assert.deepEqual(input.dailyInput.packingPlan.history, history);
+  assert.deepEqual(result.displayed.filter(p => p.minute < 821), history.points);
+  near(result.displayed.find(p => p.minute === 821).count, history.points.at(-1).count, "legacy anchor");
+  assert.ok(result.evaluation.reasons.some(r => r.includes("履歴条件不整合")));
+  assert.equal(result.evaluation.scenarioStatus, "infeasible");
+});
+test("theoretical shortage quantities and failure remain visible", () => {
+  const input = batchFixture(); input.dailyInput.picks.total.batch13 = "200000"; routeOnly(input, "gemini");
+  const original = context.document.querySelector, box = {};
+  context.document.querySelector = s => s === "#plan-summary" ? box : original(s);
+  try {
+    context.inputForTest = input; vm.runInContext("state = inputForTest; renderPlanSummary()", context);
+    assert.match(box.innerHTML, /計画不成立/);
+    assert.match(box.innerHTML, /13:00 バッチ到来時の必要供給不足：/);
+    assert.match(box.innerHTML, /件（必要/);
+  } finally { context.document.querySelector = original; }
+});
+
+test("normal work before arrival keeps a tight feasible plan feasible", () => {
+  const input = fixture(32); routeOnly(input, "gemini");
+  input.settings.picking.total = 60;
+  input.settings.packing[0].capacity = 100000;
+  input.settings.packing[0].people = 1;
+  input.settings.times.packetDeadline = "10:01";
+  input.dailyInput.staffing = { before10: "2", before13: "2", after13: "2" };
+  const result = calculate(input);
+  const baseline = context.evaluatePlanFeasibility(result.model, result.required, result.feasible);
+  assert.equal(baseline.scenarioStatus, "feasible");
+  assert.equal(result.evaluation.scenarioStatus, "feasible");
+  assert.ok(result.operational.jobs.every(j => j.finishedAt <= j.deadline));
+  const left = result.operational.points.find(p => p.minute === 599), right = result.operational.points.find(p => p.minute === 600);
+  near(right.count - left.count, 1, "9:59 work is preserved");
+});
+
+test("arrival includes prior work but no supply from the newly arriving batch", () => {
+  const input = batchFixture(200000);
+  for (const [minute, field] of [[600, "batch10"], [780, "batch13"]]) {
+    const without = copy(input); without.dailyInput.picks.total[field] = "0"; routeOnly(without, "gemini");
+    const full = calculate(input), old = calculate(without);
+    const left = full.operational.points.find(p => p.minute === minute - 1), right = full.operational.points.find(p => p.minute === minute);
+    assert.ok(right.count > left.count, "ordinary work is not paused");
+    near(right.count, old.operational.points.find(p => p.minute === minute).count, "new batch contributes zero at arrival");
+    assertOperationalBounds(full);
+  }
+});
+test("history boundary continues pending work without a forced idle interval", () => {
+  context.inputForTest = batchFixture(200000);
+  vm.runInContext("state = inputForTest; renderAll = () => {};", context);
+  const before = copy(vm.runInContext("calculateIdealProgress()", context));
+  vm.runInContext('updateStatePath("dailyInput.staffing.after13", "100");', context);
+  const input = copy(vm.runInContext("state", context)), result = calculate(input);
+  assert.deepEqual(result.displayed.filter(p => p.minute < 820), before.filter(p => p.minute < 820));
+  near(result.displayed.find(p => p.minute === 820).count, before.find(p => p.minute === 820).count, "boundary normal work");
+  assert.ok(result.displayed.find(p => p.minute === 820).count > result.displayed.find(p => p.minute === 819).count);
+  assertOperationalBounds(result);
+  assert.deepEqual(calculate(copy(input)).displayed, result.displayed);
+});
