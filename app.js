@@ -159,8 +159,7 @@ function calculateIdealSpeedAt(minute) {
   const points = calculateIdealProgress(), index = points.findIndex(point => point.minute === minute);
   if (index < 0) return null;
   const next = points[index + 1], previous = points[index - 1];
-  // At batch arrival use the forward slope; a requirement jump is not an
-  // attainable instantaneous speed and is reported by plan feasibility.
+  // Use the local operational-target slope, never the theoretical requirement.
   const left = next ? points[index] : previous, right = next || points[index];
   return left && right.minute > left.minute ? Math.max(0, (right.count - left.count) * 60 / (right.minute - left.minute)) : 0;
 }
@@ -258,10 +257,10 @@ function currentMetrics() {
 }
 function calculateCurrentStaffingSummary() {
   const plan = getPackingPlan(), minute = timeToMinutes(state.dailyInput.currentTime);
-  const point = plan.feasible.points.find(point => point.minute === minute);
+  const point = plan.operational.points.find(point => point.minute === minute);
   const totalPeople = minute === null ? null : staffForMinute(minute);
   if (!point) return { totalPeople, packingPeople: null, pickingPeople: null, nextPackingStart: null, staffingStatus: null };
-  const future = plan.feasible.lines.map(line => line.firstStart).filter(start => start !== null && start > minute);
+  const future = plan.operational.lines.map(line => line.firstStart).filter(start => start !== null && start > minute);
   return { totalPeople, packingPeople: point.packingPeople, pickingPeople: point.pickingPeople,
     nextPackingStart: future.length ? Math.min(...future) : null,
     staffingStatus: plan.evaluation.status === "unknown" ? "要確認" : point.otherPeople + point.packingPeople <= totalPeople ? "充足" : "不足" };
@@ -352,12 +351,12 @@ function renderPackingTable(selector, detail) {
 function renderPackingDetail() { renderPackingTable("#packing-detail-body", true); const outsourced = valueOrNull(state.dailyInput.outsourced); document.querySelector("#packing-notice").textContent = outsourced === null ? "外部委託件数が未入力のため、社内梱包対象件数と概算値は確定できません。" : "梱包完了時刻は計画上の完了見込みです。計画開始時点から入力条件でシミュレーションしており、現時点のピッキング・梱包実績を反映した再予測ではありません。表示件数・開始リミット時刻も確定実績ではありません。"; }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
 function renderPlanSummary() {
-  const { model, evaluation } = getPackingPlan();
+  const { model, evaluation, shortages } = getPackingPlan();
   const presentation = getPlanPresentation(evaluation);
   const reasons = [...evaluation.reasons];
   const observations = [];
   const actual = getContiguousActuals().filter(row => row.minute <= model.current).at(-1);
-  const requirement = getPackingPlan().displayed.find(point => point.minute === actual?.minute);
+  const requirement = getPackingPlan().required.find(point => point.minute === actual?.minute);
   if (requirement && actual.count + PLAN_EPSILON < requirement.count) {
     observations.push("ピッキング実績が必要進捗に未達です。梱包先別の実供給・仕掛・梱包実績を確認してください。");
   }
@@ -369,12 +368,14 @@ function renderPlanSummary() {
   if (pastLatest) observations.push("開始リミットを過ぎたラインがあります。実稼働・梱包実績は未取得のため、実際の残処理量・完了は未確認です。");
   const box = document.querySelector("#plan-summary");
   box.className = `plan-summary ${observations.length && presentation.tone === "good" ? "warn" : presentation.tone}`;
-  const details = [...reasons, ...evaluation.assumptions, ...observations];
+  const firstShortage = shortages.filter(p => p.minute <= model.current && model.times.slice(1).includes(p.minute)).at(-1) || shortages.find(p => p.minute <= model.current);
+  const shortageText = firstShortage ? `必要供給と目標の乖離：${minutesToTime(firstShortage.minute)}に${formatNumber(firstShortage.count)}件不足（理論必要${formatNumber(firstShortage.required)}件／目標${formatNumber(firstShortage.target)}件）。期限可否は人員・ライン別供給・仕掛を含めて別途判定します。` : "";
+  const details = [...reasons, ...evaluation.assumptions, ...observations, ...shortages.filter(p => model.times.slice(1).includes(p.minute)).map(p => `${minutesToTime(p.minute)} バッチ到来時の必要供給不足：${formatNumber(p.count)}件（必要${formatNumber(p.required)}件／目標${formatNumber(p.target)}件）`)];
   const assumptions = evaluation.assumptions.length ? "梱包先別件数・初期仕掛・稼働時刻など、適用中の仮定は下の一覧で確認できます。詳細条件の確認により結果が変わる可能性があります。" : "必要な入力条件は確認済みです。";
-  box.innerHTML = `<strong>${presentation.title}</strong><p>${presentation.description}</p>${reasons.length ? `<p class="plan-constraint">主な制約：${escapeHtml(reasons[0])}</p>` : ""}<p class="plan-confirmation">${presentation.confirmation} — ${assumptions}</p>${details.length ? `<details><summary>判定根拠・適用中の仮定・実績の確認（${details.length}件）</summary><ul>${details.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul><p>稼働開始可能時刻の仮定は設備が早期稼働可能という意味です。人員や仕掛の確保を意味せず、人員・仕掛供給制約は引き続き適用します。</p></details>` : ""}${observations.length ? `<p class="plan-observation">実績・稼働の確認：${escapeHtml(observations[0])}</p>` : ""}<p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish, finishStatus)}　｜　出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><small>計画開始時点から入力条件でシミュレーションした結果です。現時点のピッキング・梱包実績を反映した再予測ではありません。対象は到来済みバッチです（未来バッチは未反映）。実際の梱包完了を保証しません。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。別の配置方法で解決できる可能性があります。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</small>`;
+  box.innerHTML = `<strong>${presentation.title}</strong><p>${presentation.description}</p>${reasons.length ? `<p class="plan-constraint">主な制約：${escapeHtml(reasons[0])}</p>` : ""}${shortageText ? `<p class="plan-constraint">${escapeHtml(shortageText)}</p>` : ""}<p class="plan-confirmation">${presentation.confirmation} — ${assumptions}</p>${details.length ? `<details><summary>判定根拠・適用中の仮定・実績の確認（${details.length}件）</summary><ul>${details.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul><p>稼働開始可能時刻の仮定は設備が早期稼働可能という意味です。人員や仕掛の確保を意味せず、人員・仕掛供給制約は引き続き適用します。</p></details>` : ""}${observations.length ? `<p class="plan-observation">実績・稼働の確認：${escapeHtml(observations[0])}</p>` : ""}<p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish, finishStatus)}　｜　出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><small>計画開始時点から入力条件でシミュレーションした結果です。現時点のピッキング・梱包実績を反映した再予測ではありません。対象は到来済みバッチです（未来バッチは未反映）。実際の梱包完了を保証しません。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。別の配置方法で解決できる可能性があります。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</small>`;
 }
 function calculatePlannedPackingRows() {
-  const { model, feasible } = getPackingPlan();
+  const { model, operational: feasible } = getPackingPlan();
   const shares = sum(model.lines.map(line => Number(line.share)));
   return state.settings.packing.map(master => {
     const line = model.lines.find(line => line.id === master.id);

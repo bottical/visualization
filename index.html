@@ -40,7 +40,7 @@
       </div>
       <div class="card chart-card">
         <div class="card-title"><div><span class="tag calc">計算値</span><h3>ピッキング進捗　理想／実績進捗</h3></div><div class="legend"><span><i class="ideal"></i>理想進捗</span><span><i class="actual"></i>実績進捗</span><span><i class="packing-marker"></i>梱包 開始リミット</span><span><i class="finish-marker"></i>ピッキング終了見込み</span><span><i class="current-marker"></i>現在時刻</span></div></div>
-        <p class="planning-note">理想進捗：梱包期限から逆算した必要ピッキング進捗。到来済みバッチの将来計画を含みます。</p>
+        <p class="planning-note">理想進捗：人員・生産性・梱包への配置・仕掛供給を考慮した運用上の目標。梱包期限から逆算した理論上の必要供給量とは別に計算し、期限達成の可否と不足は計画判定に表示します。到来済みバッチの将来計画を含みます。</p>
         <div id="plan-summary" class="plan-summary" aria-live="polite"></div>
         <canvas id="progress-chart" height="340" aria-label="理想進捗と実績進捗、および現在時刻、梱包開始リミット時刻、ピッキング終了見込みのグラフ"></canvas>
         <div class="event-strip" id="event-strip"></div>

@@ -193,17 +193,23 @@ function calculateRequiredPickingProgress(model, input) {
   return points;
 }
 
-function calculateFeasiblePickingProgress(model, input) {
+function calculateFeasiblePickingProgress(model, input, options = {}) {
   if (model.errors.length) return { points: [], jobs: [], reasons: [], lines: [] };
   const jobs = model.jobs.map(job => ({ ...job, supplied: 0, packed: 0, finishedAt: null }));
+  const history = options.continuous ? model.plan.history : { through: null, points: [] };
+  const saved = new Map(history.points.filter(p => p.minute < history.through).map(p => [p.minute, p]));
+  const boundary = history.points.filter(p => p.minute < history.through).at(-1);
+  let seedRemaining = saved.get(model.times[0])?.count ?? Infinity;
   const reasons = [], add = text => { if (!reasons.includes(text)) reasons.push(text); };
   for (const line of model.lines) {
     let wip = line.initialWip;
     for (const job of jobs.filter(job => job.lineId === line.id && job.field === "batch6").sort((a, b) => a.deadline - b.deadline)) {
-      const amount = Math.min(wip, job.count); job.supplied = amount; wip -= amount;
+      const amount = Math.min(wip, job.count, seedRemaining); job.supplied = amount; wip -= amount; seedRemaining -= amount;
     }
   }
   let picked = jobs.reduce((n, job) => n + job.supplied, 0);
+  if (saved.has(model.times[0]) && Math.abs(picked - saved.get(model.times[0]).count) > PLAN_EPSILON) add("履歴条件不整合：開始時の保存累計と初期仕掛が一致しません");
+  if (boundary && boundary.count > model.batches.reduce((n, b) => n + b.total, 0) + PLAN_EPSILON) add("履歴条件不整合：保存累計が現在の対象件数を超えています（履歴は保持）");
   const points = [], active = new Set(), lineStats = new Map(model.lines.map(line => [line.id, { id: line.id, firstStart: null, finish: null, starvedMinutes: 0, staffDelayedMinutes: 0 }]));
   const end = Math.max(model.times[0], model.current, ...jobs.map(job => job.deadline));
   for (let minute = model.times[0]; minute <= end; minute++) {
@@ -236,17 +242,27 @@ function calculateFeasiblePickingProgress(model, input) {
       wipByLine: Object.fromEntries(model.lines.map(line => [line.id, byLine[line.id] - packedByLine[line.id]])) });
     if (minute === end) break;
     let personHours = available / 60;
+    // Reuse the full supply/WIP/crew simulation for the operational target.
+    // A receiving boundary reserves the preceding one-minute interval. This
+    // is a conservative plan policy, not a replacement of a plotted point.
+    const receiving = options.continuous && model.times.slice(1).includes(minute + 1);
+    const nextSaved = saved.get(minute + 1);
+    const atBoundary = options.continuous && boundary && minute + 1 === history.through;
+    let pickBudget = receiving ? 0 : nextSaved ? Math.max(0, nextSaved.count - picked) : atBoundary ? Math.max(0, boundary.count - picked) : Infinity;
+    if (receiving || atBoundary) personHours = 0;
     // FIFO batches with their own mix productivity. A later batch never
     // changes productivity, allocation, or supply in a historical interval.
     for (const batch of model.batches.filter(batch => batch.release <= minute)) {
       const pending = jobs.filter(job => job.field === batch.field && job.supplied < job.count - PLAN_EPSILON);
       const remaining = pending.reduce((n, job) => n + job.count - job.supplied, 0);
       if (!(remaining > PLAN_EPSILON) || !(batch.average > 0)) continue;
-      const quantity = Math.min(remaining, personHours * batch.average);
+      const quantity = Math.min(remaining, personHours * batch.average, pickBudget);
       for (const job of pending) job.supplied += quantity * (job.count - job.supplied) / remaining;
-      picked += quantity; personHours -= quantity / batch.average;
+      picked += quantity; personHours -= quantity / batch.average; pickBudget -= quantity;
       if (personHours < PLAN_EPSILON) break;
     }
+    if (options.continuous && nextSaved && Math.abs(picked - nextSaved.count) > PLAN_EPSILON) add("履歴条件不整合：保存済み目標を現在の人員・需要・初期仕掛で再現できません");
+    if (atBoundary && Math.abs(picked - boundary.count) > PLAN_EPSILON) add("履歴条件不整合：履歴境界の累計を現在の計画で再現できません");
     for (const line of running) {
       let capacity = calculatePackingCapacity(line, minute, model, input) / 60;
       const stats = lineStats.get(line.id), pending = live(line).sort((a, b) => a.deadline - b.deadline || a.release - b.release);
@@ -311,14 +327,28 @@ function getPlanPresentation(evaluation) {
 }
 function calculatePackingPlan(input) {
   const model = calculatePackingDemand(input), required = calculateRequiredPickingProgress(model, input), feasible = calculateFeasiblePickingProgress(model, input);
+  const operational = calculateFeasiblePickingProgress(model, input, { continuous: true });
   const history = model.plan.history;
   const frozen = history.points.filter(p => p.minute < history.through);
   const lastFrozen = frozen.at(-1)?.count ?? 0;
-  const displayed = [...frozen, ...required.filter(p => history.through === null || p.minute >= history.through).map(p => ({ ...p, count: Math.max(lastFrozen, p.count) }))];
-  // Do not hide a future supply shortfall by evaluating a lower, recomputed
-  // curve than the one actually displayed after a history-preserving edit.
-  const future = new Map(displayed.map(point => [point.minute, point]));
-  const evaluated = required.map(point => history.through !== null && point.minute >= history.through ? future.get(point.minute) || point : point);
-  const evaluation = evaluatePlanFeasibility(model, evaluated, feasible);
-  return { model, required, feasible, evaluation, displayed };
+  const displayed = model.errors.length ? [] : [...frozen, ...operational.points.filter(p => history.through === null || p.minute >= history.through).map(p => {
+    const batches = model.batches.filter(batch => batch.release <= p.minute);
+    const total = batches.reduce((n, batch) => n + batch.total, 0), hours = batches.reduce((n, batch) => n + batch.hours, 0);
+    // Preserve incompatible legacy history explicitly; never invent a jump to
+    // catch the new simulation. Its inconsistency remains a failure reason.
+    const count = Math.max(lastFrozen, p.count);
+    return { minute: p.minute, count, hours: total > 0 ? count * hours / total : 0 };
+  })];
+  const baseline = evaluatePlanFeasibility(model, required, feasible);
+  const evaluation = evaluatePlanFeasibility(model, required, operational);
+  // Continuity cannot turn any original theoretical failure into success.
+  evaluation.reasons = [...new Set([...baseline.reasons, ...evaluation.reasons])];
+  if (!model.errors.length && evaluation.reasons.length) {
+    evaluation.scenarioStatus = "infeasible";
+    evaluation.status = model.assumptions.length ? "unknown" : "infeasible";
+  }
+  const targets = new Map(displayed.map(p => [p.minute, p]));
+  const shortages = required.map(p => ({ minute: p.minute, required: p.count, target: targets.get(p.minute)?.count ?? 0,
+    count: Math.max(0, p.count - (targets.get(p.minute)?.count ?? 0)) })).filter(p => p.count > PLAN_EPSILON);
+  return { model, required, feasible, operational, evaluation, displayed, shortages };
 }
