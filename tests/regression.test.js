@@ -21,6 +21,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync("planning.js", "utf8"), context);
+vm.runInContext(fs.readFileSync("visibility.js", "utf8"), context);
 
 vm.runInContext(`${source}
 function assertNear(actual, expected, tolerance, label) {
@@ -160,7 +161,9 @@ assertNear(metrics.current.count, 9800, 0, "実績累計");
 assertNear(metrics.diffCount, 9800 - baselinePoint.count, 0.0001, "当初計画との差");
 assertNear(chosen.displayed.find(p => p.minute === metrics.current.minute).count, 9800, 0.0001, "実績反映線の起点");
 const nextTarget = chosen.displayed.find(p => p.minute === metrics.current.minute + 1);
-assertNear(metrics.idealSpeed, (nextTarget.count - 9800) * 60, 0.0001, "再計画の局所速度");
+assertNear(metrics.replanSpeed, (nextTarget.count - 9800) * 60, 0.0001, "再計画速度は独立指標");
+const nextReference = chosen.initialPlan.points.find(p => p.minute === metrics.current.minute + 1);
+assertNear(metrics.referenceSpeed, (nextReference.count - baselinePoint.count) * 60, 0.0001, "ペースは基準計画速度と比較");
 assertNear(metrics.recentSpeed, 1800, 0, "直近実績速度");
 if (metrics.delay === null || metrics.delay < 0) throw new Error("遅れ時間の整合");
 if (minutesToTime(metrics.finish) !== "14:33") throw new Error("終了見込み: " + minutesToTime(metrics.finish));

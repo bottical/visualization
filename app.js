@@ -155,13 +155,25 @@ function getPackingPlan() {
   return packingPlanCache.value;
 }
 function calculateIdealProgress() { return getPackingPlan().displayed; }
-function calculateIdealSpeedAt(minute) {
-  const points = calculateIdealProgress(), index = points.findIndex(point => point.minute === minute);
-  if (index < 0) return null;
-  const next = points[index + 1], previous = points[index - 1];
-  // Use the local operational-target slope, never the theoretical requirement.
-  const left = next ? points[index] : previous, right = next || points[index];
-  return left && right.minute > left.minute ? Math.max(0, (right.count - left.count) * 60 / (right.minute - left.minute)) : 0;
+function calculateIdealSpeedAt(minute) { return progressSpeed(calculateIdealProgress(), minute); }
+let showRequiredSupply = true;
+function signedCount(value) { if (!Number.isFinite(value)) return "算出不可"; const magnitude = Math.abs(value) <= PLAN_EPSILON ? 0 : Math.abs(value); return `${magnitude && value < 0 ? "−" : "+"}${magnitude && magnitude < 0.1 ? "0.1件未満" : formatNumber(magnitude, 1) + "件"}`; }
+function getSupplyView() { return calculateSupplyView(getPackingPlan(), timeToMinutes(state.dailyInput.currentTime)); }
+function supplyTone(risk) { return risk?.evaluationState === "shortage" ? "warn" : risk?.evaluationState === "sufficient" ? "good" : ""; }
+function deadlineTone(risk) { return risk?.deadlineStatus === "期限未達見込み" ? "bad" : supplyTone(risk); }
+function maximumShortageText(risk) {
+  if (risk?.evaluationState === "period-ended") return "評価期間終了";
+  return risk?.evaluationState === "unavailable" || !Number.isFinite(risk?.maximumShortage) ? "算出不可" : `${formatNumber(risk.maximumShortage, 1)}件`;
+}
+function futureShortageText(risk) {
+  if (risk?.evaluationState === "period-ended") return "評価期間終了（期限経過）";
+  if (!risk || risk.evaluationState === "unavailable") return "算出不可";
+  if (risk.ongoing) return risk.firstFuture === null ? "現在不足・継続分を含む" : `現在不足／新規再発 ${minutesToTime(risk.firstFuture)}`;
+  return risk.firstFuture === null ? "新規不足なし" : minutesToTime(risk.firstFuture);
+}
+function renderSupplyMetrics() {
+  const view = getSupplyView(), current = view.current;
+  document.querySelector("#supply-metrics").innerHTML = `<div><span>計画供給差 ${state.dailyInput.currentTime || "時刻未入力"}</span><strong>${signedCount(current?.difference)}</strong><small>採用計画 ${current ? formatNumber(current.planned) : "－"}件 − 理論必要 ${current ? formatNumber(current.required) : "－"}件</small></div><div><span>将来の新規不足</span><strong>${futureShortageText(view)}</strong><small>最大不足 ${maximumShortageText(view)}（現在以降のピーク）</small></div><p>正の差は安全余力・減員可能数量ではありません。期限可否は人員・仕掛・梱包を含む計画判定で確認してください。</p>${view.reconciliation && (Math.abs(view.reconciliation.outsourcedPlanned) > PLAN_EPSILON || Math.abs(view.reconciliation.requiredAdjustment) > PLAN_EPSILON) ? `<details><summary>全体と社内ライン合計の内訳</summary>社内供給差 ${signedCount(view.reconciliation.internalDifference)}、委託分供給差 ${signedCount(view.reconciliation.outsourcedDifference)}、必要累計補正 ${formatNumber(view.reconciliation.requiredAdjustment, 1)}件。全体差＝社内差＋委託差−必要累計補正。</details>` : ""}`;
 }
 function calculateActualProgress() {
   const start = timeToMinutes(state.settings.times.start);
@@ -233,20 +245,27 @@ function updateStatePath(path, value, now = new Date()) {
     state.dailyInput.currentTime = getCurrentTenMinuteTime(now, value);
   }
 }
-function statusClass(status) { return ["完了", "先行", "順調", "開始前", "計画内完了", "対象なし"].includes(status) ? "good" : ["遅延・回復中", "開始期限到来"].includes(status) ? "warn" : ["遅延拡大", "締切超過", "期限内未達"].includes(status) ? "bad" : ""; }
+function statusClass(status) { return ["完了", "先行", "順調", "開始前", "計画内完了", "対象なし"].includes(status) ? "good" : ["遅延・回復中", "開始期限到来", "計画比遅れ"].includes(status) ? "warn" : ["遅延拡大", "締切超過", "期限内未達"].includes(status) ? "bad" : ""; }
 
 function currentMetrics() {
   const totals = getPickTotals(), ideal = calculateIdealProgress(), actual = getContiguousActuals(), currentMinute = timeToMinutes(state.dailyInput.currentTime);
   const validActual = actual.filter(x => x.count !== null && currentMinute !== null && x.minute <= currentMinute), current = validActual.at(-1);
   const recentSpeed = calculateRecentSpeed(validActual);
   const finish = current && totals.totalCount !== null ? calculateFinishEstimate(current.minute, current.count, totals.totalCount, recentSpeed) : null;
-  const base = { totals, ideal, actual, current, currentMinute, recentSpeed, finish, dataAge: current ? currentMinute - current.minute : null, status: "未判定" };
-  if (!current || !ideal.length || currentMinute === null) return base;
-  const reference = getPackingPlan().initialPlan.points;
-  const idealPoint = [...reference].reverse().find(x => x.minute <= current.minute); if (!idealPoint) return base;
-  const idealSpeed = calculateIdealSpeedAt(current.minute);
-  const status = judgeProgressStatus({ actualCount: current.count, idealCount: idealPoint.count, totalCount: totals.totalCount, recentSpeed, idealSpeed });
-  return { ...base, idealPoint, idealSpeed, status, diffCount: current.count - idealPoint.count, delay: calculateDelayMinutes(current.count, idealPoint.count, idealSpeed) };
+  const plan = getPackingPlan(), evaluationMinute = current?.minute ?? currentMinute;
+  const reference = plan.initialPlan.points;
+  const idealPoint = reference.find(p => p.minute === evaluationMinute) || null;
+  const referenceSpeed = progressSpeed(reference, evaluationMinute);
+  const requiredPoint = plan.required.find(p => p.minute === evaluationMinute) || null;
+  const replanSpeed = calculateIdealSpeedAt(evaluationMinute);
+  const base = { totals, ideal, actual, current, currentMinute, recentSpeed, finish,
+    dataAge: current ? currentMinute - current.minute : null, status: "未判定",
+    evaluationMinute, idealPoint, requiredPoint, referenceSpeed, idealSpeed: referenceSpeed, replanSpeed };
+  if (!current || !idealPoint || currentMinute === null) return base;
+  const diffCount = current.count - idealPoint.count;
+  const status = referenceSpeed === 0 && diffCount < 0 ? "計画比遅れ" : judgeProgressStatus({ actualCount: current.count, idealCount: idealPoint.count, totalCount: totals.totalCount, recentSpeed, idealSpeed: referenceSpeed });
+  return { ...base, status, diffCount, actualRequiredDifference: requiredPoint ? current.count - requiredPoint.count : null,
+    delay: referenceDelay(reference, evaluationMinute, current.count) };
 }
 function calculateCurrentStaffingSummary() {
   const plan = getPackingPlan(), minute = timeToMinutes(state.dailyInput.currentTime);
@@ -315,22 +334,25 @@ function renderStaffingSummary() {
 }
 function renderSummary() {
   const m = currentMetrics(); const ready = m.current && m.idealPoint; const pace = ready && m.recentSpeed !== null && m.idealSpeed > 0 ? m.recentSpeed / m.idealSpeed * 100 : null;
+  const evaluationTime = isFiniteNumber(m.evaluationMinute) ? minutesToTime(m.evaluationMinute) : "未入力";
   const items = [
-    ["現在状態", `<span class="status ${statusClass(m.status)}">${m.status}</span>`, "件数差・直近速度で判定", "highlight"],
-    ["当初計画累計", ready ? `${formatNumber(m.idealPoint.count)}件` : "－", ready ? `理想速度 ${formatNumber(m.idealSpeed)} 件/時` : "入力待ち", ""],
-    ["実績累計", m.current ? `${formatNumber(m.current.count)}件` : "－", m.current ? `最終実績 ${minutesToTime(m.current.minute)}` : "実績待ち", "actual-kpi"],
-    ["差分", ready ? `${m.diffCount >= 0 ? "+" : ""}${formatNumber(m.diffCount)}件` : "－", "実績件数－当初計画件数", ""],
-    ["遅れ時間", ready && m.delay !== null ? `${formatNumber(m.delay)}分` : "－", `許容 ${state.settings.toleranceMinutes}分`, ""],
-    ["直近ペース", pace !== null ? `${formatNumber(pace)}%` : "－", m.recentSpeed !== null ? `${formatNumber(m.recentSpeed)} 件/時` : "算出不可", "actual-kpi"],
-    ["ピッキング終了見込み", m.finish !== null && m.finish !== undefined ? minutesToTime(m.finish) : "－", m.finish ? "直近速度から概算" : "算出不可", ""]
+    ["作業進捗（基準計画比）", `<span class="status ${statusClass(m.status)}">${m.status}</span>`, "期限判定は別表示", "highlight"],
+    ["基準計画累計（現行条件）", m.idealPoint ? `${formatNumber(m.idealPoint.count)}件` : "算出不可", `${evaluationTime}／実績なしで計算した比較用計画`, ""],
+    ["実績累計", m.current ? `${formatNumber(m.current.count)}件` : "－", m.current ? `観測 ${minutesToTime(m.current.minute)}` : "実績待ち", "actual-kpi"],
+    ["基準計画との差", ready ? signedCount(m.diffCount) : "算出不可", `${evaluationTime} 実績−基準計画`, ""],
+    ["理論必要供給との差", ready ? signedCount(m.actualRequiredDifference) : "算出不可", `${evaluationTime} 実績−理論必要（ライン別は未確認）`, ""],
+    ["基準計画に対する遅れ", ready && m.delay !== null ? `${formatNumber(m.delay, 1)}分` : "算出不可", `${evaluationTime} 基準計画上の到達時刻で比較`, ""],
+    ["直近ペース（基準計画比）", pace !== null ? `${formatNumber(pace)}%` : "算出不可", `実績 ${m.recentSpeed === null ? "－" : formatNumber(m.recentSpeed)}／基準 ${m.referenceSpeed === null ? "－" : formatNumber(m.referenceSpeed)} 件/時`, "actual-kpi"],
+    ["ピッキング終了見込み", m.finish !== null && m.finish !== undefined ? minutesToTime(m.finish) : "－", "直近実績速度から概算", ""]
   ];
   document.querySelector("#progress-time-info").innerHTML = `<div class="mini-metric"><span>現在時刻</span><strong>${state.dailyInput.currentTime || "－"}</strong></div><div class="mini-metric"><span>実績最終更新</span><strong>${m.current ? minutesToTime(m.current.minute) : "－"}</strong></div><div class="mini-metric"><span>データ経過時間</span><strong>${isFiniteNumber(m.dataAge) ? `${m.dataAge}分` : "－"}</strong></div>`;
   document.querySelector("#kpi-grid").innerHTML = items.map(x => `<div class="kpi ${x[3]}"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join("");
   renderStaffingSummary();
   renderPlanSummary();
+  renderSupplyMetrics();
   const t = state.settings.times; document.querySelector("#event-strip").innerHTML = [[t.start,"開始"],[t.batch10,"バッチ追加"],[t.batch13,"バッチ追加"],[t.alert,"警戒ライン"]].map(x => `<span class="event"><strong>${x[0]}</strong> ${x[1]}</span>`).join("");
   const packing = calculatePlannedPackingRows();
-  renderPackingTable("#packing-summary-body", false); renderChart(m.ideal, m.actual, { currentMinute: isFiniteNumber(m.currentMinute) ? m.currentMinute : timeToMinutes(state.dailyInput.currentTime), finishMinute: m.finish, packing });
+  renderPackingTable("#packing-summary-body", false); renderChart(m.ideal, m.actual, { currentMinute: isFiniteNumber(m.currentMinute) ? m.currentMinute : timeToMinutes(state.dailyInput.currentTime), finishMinute: m.finish, packing, required: getPackingPlan().required, batchMinutes: [timeToMinutes(t.batch10), timeToMinutes(t.batch13)] });
 }
 function renderPickTable() {
   const totals = getPickTotals();
@@ -348,8 +370,22 @@ function formatPlannedPackingFinish(finish, status) {
   return isFiniteNumber(finish) ? minutesToTime(finish) : "算出不可";
 }
 function renderPackingTable(selector, detail) {
-  const buffer = valueOrNull(state.dailyInput.bufferMinutes); const rows = calculatePlannedPackingRows();
-  document.querySelector(selector).innerHTML = rows.map(x => { const status = x.planStatus, share = `<td class="number">${formatNumber(x.normalizedShare * 100,2)}%</td>`, count = `<td class="number approx">${x.count === null ? "－" : `${formatNumber(x.count)} 件${x.estimated ? "（概算）" : "（確定）"}`}</td>`; return `<tr><td><strong>${x.name}</strong>${x.id === "manual" ? ' <span class="tag provisional">配送区分注意</span>' : ""}</td>${detail ? share + count : count + share}<td class="number">${x.effectiveCapacity === null ? "算出不可" : `${formatNumber(x.effectiveCapacity)} 件/時`}</td><td>${x.people === null ? "未入力" : x.id === "manual" ? `${x.people}人` : `${x.people}人（固定）`}</td><td>${x.deadline}</td>${detail ? `<td>${buffer === null ? "未入力" : `${buffer}分`}</td>` : ""}<td>${formatPlannedPackingFinish(x.finish, x.planStatus)}${x.remainingEstimate === null ? "" : `<small class="planning-note">残梱包推定 ${formatNumber(x.remainingEstimate)}件／仕掛推定 ${formatNumber(x.wipEstimate)}件</small>`}</td><td class="approx">${x.latestStartMinutes === null ? "算出不可" : minutesToDeadlineTime(x.latestStartMinutes)}</td><td><span class="status ${statusClass(status)}">${status}</span></td></tr>`; }).join("");
+  const buffer = valueOrNull(state.dailyInput.bufferMinutes), rows = calculatePlannedPackingRows();
+  const risks = new Map(getSupplyView().lines.map(r => [r.id, r]));
+  const now = state.dailyInput.currentTime || "時刻未入力";
+  document.querySelector(selector).innerHTML = rows.map(x => {
+    const r = risks.get(x.id), gap = signedCount(r?.current?.difference);
+    const maximum = maximumShortageText(r);
+    const deadlines = r?.deadlines.length ? r.deadlines.map(minutesToTime).join("／") : r ? "対象なし" : "算出不可";
+    const finish = formatPlannedPackingFinish(x.finish, x.planStatus);
+    const supply = r?.supplyStatus || "算出不可", deadlineStatus = r?.deadlineStatus || "算出不可";
+    const name = `<td><strong>${escapeHtml(x.name)}</strong></td>`;
+    const count = `<td class="number">${x.count === null ? "－" : `${formatNumber(x.count)}件${x.estimated ? "（概算配分）" : ""}`}</td>`;
+    const finishCell = `<td>${finish}${x.remainingEstimate === null ? "" : `<small>残梱包推定 ${formatNumber(x.remainingEstimate)}件</small>`}${detail ? "" : `<small>開始リミット ${x.latestStartMinutes === null ? "算出不可" : minutesToDeadlineTime(x.latestStartMinutes)}</small>`}</td>`;
+    if (!detail) return `<tr>${name}${count}<td class="number ${r?.evaluationState === "shortage" && r?.current?.difference < 0 ? "supply-deficit" : ""}">${gap}<small>${now}／仕掛推定 ${r?.wip === null || !r ? "－" : formatNumber(r.wip)}件</small></td><td>${futureShortageText(r)}<small>最大不足 ${maximum}</small></td>${finishCell}<td>${deadlines}</td><td><span class="status ${supplyTone(r)}">${supply}</span></td><td><span class="status ${deadlineTone(r)}">${deadlineStatus}</span></td></tr>`;
+    const past = !r ? "算出不可" : r.pastFirst === null ? "過去不足なし" : `${minutesToTime(r.pastFirst)}以降／最大${formatNumber(r.pastMaximum, 1)}件（過去）`;
+    return `<tr>${name}<td class="number">${formatNumber(x.normalizedShare * 100,2)}%</td>${count}<td class="number">${x.effectiveCapacity === null ? "算出不可" : `${formatNumber(x.effectiveCapacity)}件/時`}</td><td>${x.people === null ? "未入力" : `${x.people}人${x.id === "manual" ? "（設定上限）" : "（固定）"}`}</td><td>${x.deadline}</td><td>${buffer === null ? "未入力" : `${buffer}分`}</td>${finishCell}<td>${x.latestStartMinutes === null ? "算出不可" : minutesToDeadlineTime(x.latestStartMinutes)}</td><td><span class="status ${deadlineTone(r)}">${deadlineStatus}</span></td><td class="number">${gap}<small>評価 ${now}</small></td><td>${futureShortageText(r)}</td><td class="number">${maximum}</td><td class="number">${r?.wip === null || !r ? "算出不可" : formatNumber(r.wip) + "件"}</td><td>${deadlines}</td><td><span class="status ${supplyTone(r)}">${supply}</span></td><td>${past}</td></tr>`;
+  }).join("");
 }
 function renderPackingDetail() { renderPackingTable("#packing-detail-body", true); const outsourced = valueOrNull(state.dailyInput.outsourced); document.querySelector("#packing-notice").textContent = outsourced === null ? "外部委託件数が未入力のため、社内梱包対象件数と概算値は確定できません。" : "梱包完了時刻は採用配置計画の推定値です。ピッキング実績があれば将来を再計算しますが、梱包済・仕掛・残梱包は推定です。表示件数・開始リミット時刻も確定実績ではありません。"; }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
@@ -461,10 +497,11 @@ function renderValidationMessages() {
   const box=document.querySelector("#validation"); box.innerHTML=messages.length?`<strong>入力内容を確認してください</strong><ul>${[...new Set(messages)].map(m=>`<li>${m}</li>`).join("")}</ul>`:""; box.classList.toggle("show",messages.length>0);
 }
 function truncateAtFirstMissing(points) { const missing = points.findIndex(point => point.count === null); return points.slice(0, missing < 0 ? points.length : missing); }
-function getChartMarkers({ currentMinute, finishMinute, packing = [] } = {}) {
+function getChartMarkers({ currentMinute, finishMinute, packing = [], batchMinutes = [] } = {}) {
   const markers = packing.filter(line => line.count > 0 && isFiniteNumber(line.latestStartMinutes)).map(line => ({ type: "packing", minute: line.latestStartMinutes, label: `${line.name} 開始リミット ${minutesToDeadlineTime(line.latestStartMinutes)}`, isPast: isFiniteNumber(currentMinute) && line.latestStartMinutes <= currentMinute }));
   if (isFiniteNumber(finishMinute)) markers.push({ type: "finish", minute: finishMinute, label: `ピッキング終了見込み ${minutesToTime(finishMinute)}` });
   if (isFiniteNumber(currentMinute)) markers.push({ type: "current", minute: currentMinute, label: `現在 ${minutesToTime(currentMinute)}` });
+  for (const minute of batchMinutes.filter(isFiniteNumber)) markers.push({ type: "batch", minute, label: `${minutesToTime(minute)} バッチ追加（必要条件更新）` });
   return markers;
 }
 function getChartTimeRange({ startMinute, alertMinute, currentMinute, latestActualMinute, finishMinute, packing = [] }) {
@@ -487,7 +524,7 @@ function markerLabelPosition(ctx, marker, markerX, left, right) {
 function calculateMarkerLabelLayout(ctx, markers, markerX, left, right, options = {}) {
   const laneGap = options.laneGap ?? 6;
   const firstLabelY = options.firstLabelY || 18, laneHeight = options.laneHeight || 21;
-  const priority = { current: 0, finish: 1, packing: 2 };
+  const priority = { current: 0, finish: 1, batch: 1, packing: 2 };
   const placed = [], laneRects = [];
   [...markers].sort((a, b) => (priority[a.type] ?? 3) - (priority[b.type] ?? 3) || markerX(a) - markerX(b)).forEach(marker => {
     const x = markerX(marker), { labelX, boxWidth } = markerLabelPosition(ctx, marker, x, left, right);
@@ -510,12 +547,13 @@ function drawMarkerLabel(ctx, marker, labelX, labelY) {
   ctx.font = markerLabelFont(marker);
   const textWidth = ctx.measureText(marker.label).width, boxWidth = textWidth + 8;
   ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.fillRect(labelX, labelY - 11, boxWidth, 15);
-  ctx.fillStyle = marker.type === "current" ? "#667789" : marker.type === "finish" ? "#18354d" : marker.isPast ? "#7a6950" : "#765900";
+  ctx.fillStyle = marker.type === "current" ? "#667789" : marker.type === "finish" ? "#18354d" : marker.type === "batch" ? "#ae3546" : marker.isPast ? "#7a6950" : "#765900";
   ctx.fillText(marker.label, labelX + 4, labelY);
 }
 function drawVerticalMarker(ctx, marker, markerX, top, bottom, labelX, labelY) {
   ctx.save(); ctx.beginPath(); ctx.moveTo(markerX, top); ctx.lineTo(markerX, bottom);
   if (marker.type === "packing") { ctx.strokeStyle = marker.isPast ? "#a9a39a" : "#b39600"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); }
+  else if (marker.type === "batch") { ctx.strokeStyle = "#ae3546"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); }
   else if (marker.type === "finish") { ctx.strokeStyle = "#18354d"; ctx.lineWidth = 2.5; ctx.setLineDash([]); }
   else { ctx.strokeStyle = "#8b98a3"; ctx.lineWidth = 1; ctx.setLineDash([2, 4]); }
   ctx.stroke(); ctx.restore(); drawMarkerLabel(ctx, marker, labelX, labelY);
@@ -548,20 +586,26 @@ function appendActualRow() {
 function renderChart(ideal, actual, chartData = {}) {
   const canvas=document.querySelector("#progress-chart"), dpr=window.devicePixelRatio||1, width=canvas.clientWidth||1100, height=340; canvas.width=width*dpr; canvas.height=height*dpr; const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr); ctx.clearRect(0,0,width,height);
   const configuredStart=timeToMinutes(state.settings.times.start), latestActual=Math.max(isFiniteNumber(configuredStart)?configuredStart:570,...actual.filter(p=>p.count!==null&&isFiniteNumber(p.minute)).map(p=>p.minute));
-  const chartRange=getChartTimeRange({startMinute:configuredStart,alertMinute:timeToMinutes(state.settings.times.alert),currentMinute:chartData.currentMinute,latestActualMinute:latestActual,finishMinute:chartData.finishMinute,packing:chartData.packing}); const start=chartRange.start,end=Math.max(chartRange.end,ideal.at(-1)?.minute||chartRange.end); const valid=[...ideal.map(x=>x.count),...actual.map(x=>x.count)].filter(isFiniteNumber); const max=Math.max(100,...valid)*1.1; const pad={l:62,r:18,t:82,b:42},x=m=>pad.l+(m-start)/(end-start)*(width-pad.l-pad.r);
+  const required = showRequiredSupply ? chartData.required || [] : [];
+  const chartRange=getChartTimeRange({startMinute:configuredStart,alertMinute:timeToMinutes(state.settings.times.alert),currentMinute:chartData.currentMinute,latestActualMinute:latestActual,finishMinute:chartData.finishMinute,packing:chartData.packing}); const start=chartRange.start,end=Math.max(chartRange.end,ideal.at(-1)?.minute||chartRange.end); const valid=[...ideal.map(x=>x.count),...required.map(x=>x.count),...actual.map(x=>x.count)].filter(isFiniteNumber); const max=Math.max(100,...valid)*1.1; const pad={l:62,r:18,t:82,b:42},x=m=>pad.l+(m-start)/(end-start)*(width-pad.l-pad.r);
   const markers=getChartMarkers(chartData).filter(marker=>marker.minute>=start&&marker.minute<=end), markerLayout=calculateMarkerLabelLayout(ctx,markers,marker=>x(marker.minute),pad.l,width-pad.r);
   const usedLanes=markerLayout.length?Math.max(...markerLayout.map(item=>item.lane))+1:0; pad.t=Math.max(pad.t,usedLanes?18+(usedLanes-1)*21+19:0); const y=v=>height-pad.b-v/max*(height-pad.t-pad.b);
-  ctx.font="11px sans-serif"; ctx.fillStyle="#71808d"; ctx.strokeStyle="#e2e7eb"; for(let i=0;i<=4;i++){const val=max*i/4,yy=y(val);ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(width-pad.r,yy);ctx.stroke();ctx.fillText(formatNumber(val),8,yy+4)}
+  ctx.font="11px sans-serif"; ctx.fillStyle="#71808d"; ctx.strokeStyle="#e2e7eb";ctx.lineWidth=1;ctx.setLineDash([]); for(let i=0;i<=4;i++){const val=max*i/4,yy=y(val);ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(width-pad.r,yy);ctx.stroke();ctx.fillText(formatNumber(val),8,yy+4)}
   [start,timeToMinutes(state.settings.times.batch10),timeToMinutes(state.settings.times.batch13),timeToMinutes(state.settings.times.alert),end].filter(isFiniteNumber).forEach(m=>{ctx.fillText(minutesToTime(m),x(m)-16,height-15)});
   markerLayout.forEach(item=>drawVerticalMarker(ctx,item.marker,item.markerX,pad.t-8,height-pad.b,item.labelX,item.labelY));
-  function line(points,color,stopAtMissing=false){const selected=points.filter(p=>p.minute>=start&&p.minute<=end), usable=stopAtMissing?truncateAtFirstMissing(selected):selected.filter(p=>p.count!==null);if(!usable.length)return;ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=3;usable.forEach((p,i)=>i?ctx.lineTo(x(p.minute),y(p.count)):ctx.moveTo(x(p.minute),y(p.count)));ctx.stroke()}
-  line(ideal,"#2878bd"); line(actual,"#f47b20",true); if(!ideal.length){ctx.fillStyle="#667789";ctx.font="bold 15px sans-serif";ctx.textAlign="center";ctx.fillText("対象件数・配送締切・バッファを確認してください",width/2,height/2);ctx.textAlign="start"}
+  function line(points,color,stopAtMissing=false,dash=[]){const selected=points.filter(p=>p.minute>=start&&p.minute<=end), usable=stopAtMissing?truncateAtFirstMissing(selected):selected.filter(p=>p.count!==null);if(!usable.length)return;ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=3;ctx.setLineDash(dash);usable.forEach((p,i)=>i?ctx.lineTo(x(p.minute),y(p.count)):ctx.moveTo(x(p.minute),y(p.count)));ctx.stroke();ctx.setLineDash([])}
+  line(ideal,"#2878bd"); line(requiredDrawPoints(required, chartData.batchMinutes || []),"#ae3546",false,[7,5]); line(actual,"#f47b20",true); if(!ideal.length){ctx.fillStyle="#667789";ctx.font="bold 15px sans-serif";ctx.textAlign="center";ctx.fillText("対象件数・配送締切・バッファを確認してください",width/2,height/2);ctx.textAlign="start"}
 }
 function renderHeaderControls(){const checkbox=document.querySelector("#auto-current-time");checkbox.checked=state.dailyInput.autoCurrentTime===true;document.querySelector("#auto-current-time-status").textContent=state.dailyInput.autoCurrentTime?`現在 ${state.dailyInput.currentTime||"－"}`:"現在時刻 手動";}
 let renderingAll = false;
 function renderAll(){if(renderingAll)return;renderingAll=true;try{renderHeaderControls();renderSummary();renderPickTable();renderPackingDetail();renderSettings();renderValidationMessages();bindDynamicInputs();}finally{renderingAll=false;}}
 function bindDynamicInputs(){document.querySelectorAll("[data-path]").forEach(el=>el.addEventListener("change",()=>{if(renderingAll)return;updateStatePath(el.dataset.path,el.value);saveState();renderAll()}));document.querySelectorAll("[data-actual]").forEach(el=>el.addEventListener("change",()=>{if(renderingAll)return;const [i,k]=el.dataset.actual.split(".");state.actuals[Number(i)][k]=el.value;saveState();renderAll()}));document.querySelectorAll("[data-remove-actual]").forEach(el=>el.addEventListener("click",()=>{state.actuals.splice(Number(el.dataset.removeActual),1);saveState();renderAll()}));}
 document.querySelectorAll(".tab").forEach(tab=>tab.addEventListener("click",()=>{document.querySelectorAll(".tab,.panel").forEach(x=>x.classList.remove("active"));tab.classList.add("active");document.querySelector(`#${tab.dataset.tab}`).classList.add("active");if(tab.dataset.tab==="summary")renderSummary()}));
+document.querySelector("#show-required-supply").addEventListener("change", event => {
+  showRequiredSupply = event.target.checked;
+  document.querySelector("#required-legend").hidden = !showRequiredSupply;
+  renderSummary();
+});
 document.querySelector("#add-actual").addEventListener("click",()=>{if(appendActualRow()){saveState();renderAll();}});
 document.querySelector("#auto-current-time").addEventListener("change",event=>{state.dailyInput.autoCurrentTime=event.target.checked;if(event.target.checked)state.dailyInput.currentTime=getCurrentTenMinuteTime(new Date(),state.settings.times.start);saveState();renderAll();});
 document.querySelector("#clear-daily").addEventListener("click",resetDailyData); document.querySelector("#reset-all").addEventListener("click",resetAll); window.addEventListener("resize",()=>renderSummary());
