@@ -191,22 +191,9 @@ function getContiguousActuals(actuals = calculateActualProgress()) {
   return result;
 }
 function calculateRecentSpeed(actuals) {
-  const valid = actuals.filter(x => x.count !== null); if (valid.length < 2) return null;
-  const windowMinutes = validNonNegativeInteger(state.settings.recentWindowMinutes); if (!windowMinutes) return null;
-  const current = valid.at(-1), target = current.minute - windowMinutes;
-  const previous = [...valid].reverse().find(x => x.minute <= target); if (!previous || current.minute === previous.minute) return null;
-  return (current.count - previous.count) / ((current.minute - previous.minute) / 60);
+  return recentComparison(actuals, [], validNonNegativeInteger(state.settings.recentWindowMinutes)).actualSpeed;
 }
-function calculateDelayMinutes(actualCount, idealCount, idealSpeed) { const shortage = idealCount - actualCount; return shortage > 0 && idealSpeed > 0 ? shortage / idealSpeed * 60 : shortage <= 0 ? 0 : null; }
 function calculateFinishEstimate(progressTimestamp, actualCount, totalCount, recentSpeed) { return recentSpeed > 0 && totalCount >= actualCount ? progressTimestamp + (totalCount - actualCount) / recentSpeed * 60 : null; }
-function judgeProgressStatus({ actualCount, idealCount, totalCount, recentSpeed, idealSpeed }) {
-  if (![actualCount, idealCount, idealSpeed].every(isFiniteNumber)) return "未判定";
-  if (isFiniteNumber(totalCount) && actualCount >= totalCount) return "完了";
-  const tolerance = validNonNegativeInteger(state.settings.toleranceMinutes); if (tolerance === null) return "未判定";
-  const toleranceCount = idealSpeed * tolerance / 60, diff = actualCount - idealCount;
-  if (diff > toleranceCount) return "先行"; if (Math.abs(diff) <= toleranceCount) return "順調";
-  if (!isFiniteNumber(recentSpeed)) return "未判定"; return recentSpeed >= idealSpeed ? "遅延・回復中" : "遅延拡大";
-}
 function calculatePackingLatestStart(deadline, buffer, hours) { const d = timeToMinutes(deadline); return d !== null && isFiniteNumber(buffer) && isFiniteNumber(hours) ? d - buffer - hours * 60 : null; }
 function allocatePackingCounts(total, shares) {
   if (!Number.isInteger(total) || total < 0 || !shares.length) return shares.map(() => null);
@@ -250,22 +237,24 @@ function statusClass(status) { return ["完了", "先行", "順調", "開始前"
 function currentMetrics() {
   const totals = getPickTotals(), ideal = calculateIdealProgress(), actual = getContiguousActuals(), currentMinute = timeToMinutes(state.dailyInput.currentTime);
   const validActual = actual.filter(x => x.count !== null && currentMinute !== null && x.minute <= currentMinute), current = validActual.at(-1);
-  const recentSpeed = calculateRecentSpeed(validActual);
-  const finish = current && totals.totalCount !== null ? calculateFinishEstimate(current.minute, current.count, totals.totalCount, recentSpeed) : null;
   const plan = getPackingPlan(), evaluationMinute = current?.minute ?? currentMinute;
   const reference = plan.initialPlan.points;
   const idealPoint = reference.find(p => p.minute === evaluationMinute) || null;
-  const referenceSpeed = progressSpeed(reference, evaluationMinute);
+  const comparison = recentComparison(validActual, reference, validNonNegativeInteger(state.settings.recentWindowMinutes));
+  const recentSpeed = comparison.actualSpeed, referenceSpeed = comparison.referenceSpeed;
+  const plannedFinish = plannedPickingCompletion(plan);
+  const forecastTarget = totals.totalCount ?? plannedFinish.target;
+  const finish = current && forecastTarget !== null ? calculateFinishEstimate(current.minute,current.count,forecastTarget,recentSpeed) : null;
   const requiredPoint = plan.required.find(p => p.minute === evaluationMinute) || null;
   const replanSpeed = calculateIdealSpeedAt(evaluationMinute);
   const base = { totals, ideal, actual, current, currentMinute, recentSpeed, finish,
-    dataAge: current ? currentMinute - current.minute : null, status: "未判定",
-    evaluationMinute, idealPoint, requiredPoint, referenceSpeed, idealSpeed: referenceSpeed, replanSpeed };
+    dataAge: current ? currentMinute - current.minute : null, status: "算出不可", trendState:"unavailable",
+    evaluationMinute, idealPoint, requiredPoint, comparison, plannedFinish, forecastTarget, referenceSpeed, idealSpeed: referenceSpeed, replanSpeed };
   if (!current || !idealPoint || currentMinute === null) return base;
   const diffCount = current.count - idealPoint.count;
-  const status = referenceSpeed === 0 && diffCount < 0 ? "計画比遅れ" : judgeProgressStatus({ actualCount: current.count, idealCount: idealPoint.count, totalCount: totals.totalCount, recentSpeed, idealSpeed: referenceSpeed });
-  return { ...base, status, diffCount, actualRequiredDifference: requiredPoint ? current.count - requiredPoint.count : null,
-    delay: referenceDelay(reference, evaluationMinute, current.count) };
+  const delay = referenceDelay(reference, evaluationMinute, current.count);
+  const trendState = progressTrend({actualCount:current.count,referenceCount:idealPoint.count,totalCount:totals.totalCount,comparison,delay,tolerance:validNonNegativeInteger(state.settings.toleranceMinutes)});
+  return { ...base, trendState, status:TREND_LABELS[trendState], diffCount, actualRequiredDifference: requiredPoint ? current.count-requiredPoint.count : null,delay };
 }
 function calculateCurrentStaffingSummary() {
   const plan = getPackingPlan(), minute = timeToMinutes(state.dailyInput.currentTime);
@@ -441,12 +430,12 @@ function calculatePlannedPackingRows() {
     const people = master.id === "manual" ? calculateStaffingCapacity(model.current, model, state).manual : master.people;
     const effectiveCapacity = line && !model.errors.length ? master.id === "manual" ? line.capacity * (point?.linePeople?.manual || 0) : calculatePackingCapacity({ ...line, start: model.times[0] }, model.current, model, state) : null;
     const stats = feasible.lines.find(stats => stats.id === master.id);
-    const complete = count === 0 || (jobs.length > 0 && feasible.jobs.filter(job => job.lineId === master.id).every(job => job.finishedAt !== null));
-    const finish = complete && count > 0 ? Math.max(...feasible.jobs.filter(job => job.lineId === master.id).map(job => job.finishedAt)) : null;
+    const completion = packingCompletion(feasible.jobs.filter(job=>job.lineId===master.id),count,model.errors.length>0);
+    const finish = completion.finish;
     return { ...master, count, people, effectiveCapacity, hours: effectiveCapacity > 0 && count !== null ? count / effectiveCapacity : null,
       normalizedShare: shares > 0 ? master.share / shares : null, latestStartMinutes: latest, finish,
       deadline: jobs.length ? deadlines.map(deadline => minutesToTime(deadline + Number(state.dailyInput.bufferMinutes))).join("／") : master.deadlineType === "packet" ? state.settings.times.packetDeadline : state.settings.times.parcelDeadline,
-      estimated: jobs.some(job => job.estimated), planStatus: model.errors.length ? "算出不可" : count === 0 ? "対象なし" : complete ? "計画内完了" : "期限内未達",
+      estimated: jobs.some(job => job.estimated), planStatus: completion.planStatus, completionState: completion.completionState, deadlineStatus: completion.deadlineStatus,
       firstStart: stats?.firstStart ?? null, simulatedPeople: point?.linePeople?.[master.id] || 0, packedEstimate: point?.packedByLine?.[master.id] ?? null, remainingEstimate: count === null || !point ? null : count - (point.packedByLine?.[master.id] || 0), wipEstimate: point?.wipByLine?.[master.id] ?? null };
   });
 }

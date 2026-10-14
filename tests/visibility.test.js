@@ -48,9 +48,9 @@ test('reference delay follows reference arrival time, handles plateaus and canno
  assert.equal(c.progressSpeed(r,20),600);assert.equal(c.progressSpeed(r,10),0);
 });
 test('baseline 9255 and observed 9000 stay -255 apart while the replanned blue anchor equals observation',()=>{
- const c=context();c.fake={initialPlan:{points:[{minute:810,count:8500},{minute:820,count:9255},{minute:830,count:10000}]},required:[{minute:820,count:9150}],displayed:[{minute:820,count:9000},{minute:821,count:9300}]};
+ const c=context();c.fake={initialPlan:{points:[{minute:790,count:7000},{minute:810,count:8500},{minute:820,count:9255},{minute:830,count:10000}]},required:[{minute:820,count:9150}],displayed:[{minute:820,count:9000},{minute:821,count:9300}]};
  vm.runInContext("state=initialPresetState();state.actuals=[{time:'13:10',totalCompleted:8100},{time:'13:40',totalCompleted:9000}];getPackingPlan=()=>fake",c);
- const m=c.currentMetrics();assert.equal(m.diffCount,-255);assert.equal(m.actualRequiredDifference,-150);assert.equal(m.ideal[0].count,m.current.count);assert.equal(m.referenceSpeed,4470);assert.equal(m.replanSpeed,18000);assert.equal(m.idealSpeed,m.referenceSpeed);assert.equal(m.recentSpeed,1800);
+ const m=c.currentMetrics();assert.equal(m.diffCount,-255);assert.equal(m.actualRequiredDifference,-150);assert.equal(m.ideal[0].count,m.current.count);assert.equal(m.referenceSpeed,4510);assert.equal(m.replanSpeed,18000);assert.equal(m.idealSpeed,m.referenceSpeed);assert.equal(m.recentSpeed,1800);
  assert.ok(Math.abs(m.delay-(820-(810+500/755*10)))<1e-9);
  assert.notEqual(m.delay,255/18000*60,'not divided by replan speed');
 });
@@ -123,4 +123,33 @@ test('summary and detail use the same expired states and detail displays the sta
  assert.match(elements['#detail'].innerHTML,/00:03以降／最大30(?:\.0)?件（過去）/);
  assert.equal((elements['#summary'].innerHTML.match(/開始リミット /g)||[]).length,2);assert.doesNotMatch(elements['#detail'].innerHTML,/開始リミット /);assert.equal((elements['#detail'].innerHTML.match(/<td>00:05<\/td>/g)||[]).length,2);
  assert.match(elements['#supply-metrics'].innerHTML,/最大不足 評価期間終了/);assert.doesNotMatch(elements['#supply-metrics'].innerHTML,/最大不足 0件|新規不足なし/);
+});
+
+test('shared completion checks every deadline and separates missing, zero, late and unfinished',()=>{
+ const c=context(),jobs=[{count:10,deadline:6,finishedAt:7},{count:10,deadline:8,finishedAt:8}],before=copy(jobs);
+ assert.equal(c.packingCompletion(jobs,20).completionState,'late');assert.equal(c.packingCompletion(jobs,20).finish,8);
+ jobs[0].finishedAt=6;assert.equal(c.packingCompletion(jobs,20).completionState,'on-time');
+ jobs[1].finishedAt=null;assert.equal(c.packingCompletion(jobs,20).completionState,'unfinished');
+ delete jobs[1].finishedAt;assert.equal(c.packingCompletion(jobs,20).completionState,'unavailable');
+ assert.equal(c.packingCompletion([],0).completionState,'no-demand');assert.equal(c.packingCompletion([],null).completionState,'unavailable');assert.equal(c.packingCompletion(before,0).completionState,'unavailable');
+ const p=riskFixture();p.operational.jobs[1].finishedAt=9;assert.equal(c.calculateSupplyView(p,8).lines[1].completionState,'late');assert.equal(c.calculateSupplyView(p,8).lines[1].deadlineStatus,'期限未達見込み');
+});
+test('pace compares exactly the observed interval across a reference staffing speed change',()=>{
+ const c=context(),actual=[{minute:0,count:0},{minute:10,count:60},{minute:40,count:240}],ref=[{minute:0,count:0},{minute:10,count:100},{minute:30,count:100},{minute:40,count:200},{minute:41,count:220}];
+ const v=c.recentComparison(actual,ref,30);assert.equal(v.start,10);assert.equal(v.end,40);assert.equal(v.actualIncrement,180);assert.equal(v.referenceIncrement,100);assert.equal(v.actualSpeed,360);assert.equal(v.referenceSpeed,200);assert.equal(v.ratio,180);
+ assert.equal(c.progressSpeed(ref,40),1200,'old local speed would yield 30%, not the new 180%');
+ const trend={actualCount:240,referenceCount:300,totalCount:500,delay:20,tolerance:15};assert.equal(c.progressTrend({...trend,comparison:v}),'recovering');assert.equal(c.progressTrend({...trend,comparison:{ratio:30,referenceSpeed:1200}}),'slowing');
+ assert.equal(c.recentComparison(actual,[{minute:10,count:100},{minute:40,count:100}],30).ratio,null);
+ assert.equal(c.recentComparison(actual,ref.filter(p=>p.minute!==10),30).ratio,null);assert.equal(c.recentComparison([],ref,30).ratio,null);assert.equal(c.recentComparison(actual,ref,50).ratio,null);
+ actual[2].count=120;assert.equal(c.recentComparison(actual,ref,30).ratio,60,'correction recomputes');
+});
+test('adopted picking completion is first target crossing, separate from reference extrapolation',()=>{
+ const c=context(),p={model:{errors:[],batches:[{total:100}]},operational:{points:[{minute:0,count:0},{minute:10,count:100},{minute:20,count:100}]}};
+ assert.equal(c.plannedPickingCompletion(p).minute,10);p.model.batches.push({total:100});assert.equal(c.plannedPickingCompletion(p).state,'unfinished');p.operational.points.push({minute:30,count:200});assert.equal(c.plannedPickingCompletion(p).minute,30);
+ p.model.batches=[];assert.equal(c.plannedPickingCompletion(p).state,'no-demand');p.model.errors=['missing'];assert.equal(c.plannedPickingCompletion(p).state,'unavailable');
+});
+test('progress trend never replaces shipment feasibility, in either direction',()=>{
+ const c=context();const trend={actualCount:10,referenceCount:100,totalCount:200,comparison:{ratio:50,referenceSpeed:100},delay:30,tolerance:15};
+ assert.equal(c.progressTrend(trend),'slowing');assert.equal(c.getPlanPresentation({scenarioStatus:'feasible',status:'unknown',assumptions:['estimate']}).tone,'warn');
+ assert.equal(c.progressTrend({...trend,actualCount:100}),'steady');assert.equal(c.getPlanPresentation({scenarioStatus:'infeasible',status:'unknown',assumptions:['estimate']}).tone,'bad');
 });

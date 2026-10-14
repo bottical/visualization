@@ -162,8 +162,8 @@ assertNear(metrics.diffCount, 9800 - baselinePoint.count, 0.0001, "当初計画�
 assertNear(chosen.displayed.find(p => p.minute === metrics.current.minute).count, 9800, 0.0001, "実績反映線の起点");
 const nextTarget = chosen.displayed.find(p => p.minute === metrics.current.minute + 1);
 assertNear(metrics.replanSpeed, (nextTarget.count - 9800) * 60, 0.0001, "再計画速度は独立指標");
-const nextReference = chosen.initialPlan.points.find(p => p.minute === metrics.current.minute + 1);
-assertNear(metrics.referenceSpeed, (nextReference.count - baselinePoint.count) * 60, 0.0001, "ペースは基準計画速度と比較");
+const intervalReference = chosen.initialPlan.points.find(p => p.minute === metrics.comparison.start);
+assertNear(metrics.referenceSpeed, (baselinePoint.count - intervalReference.count) / (metrics.comparison.end-metrics.comparison.start) * 60, 0.0001, "同一区間の基準計画平均速度と比較");
 assertNear(metrics.recentSpeed, 1800, 0, "直近実績速度");
 if (metrics.delay === null || metrics.delay < 0) throw new Error("遅れ時間の整合");
 if (minutesToTime(metrics.finish) !== "14:33") throw new Error("終了見込み: " + minutesToTime(metrics.finish));
