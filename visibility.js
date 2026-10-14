@@ -71,7 +71,7 @@ function calculateSupplyView(plan, minute) {
   const overall = supplyWindow(series, minute, end);
   const lines = plan.model.lines.map(line => {
     const jobs = plan.operational.jobs.filter(j => j.lineId === line.id);
-    const count = jobs.reduce((n, j) => n + j.count, 0);
+    const count = plan.model.jobs.filter(j => j.lineId === line.id).reduce((n, j) => n + j.count, 0);
     const deadlines = [...new Set(jobs.map(j => j.deadline))].sort((a, b) => a - b);
     const deadline = deadlines.at(-1) ?? null;
     const lineSeries = plan.required.map(r => {
@@ -81,10 +81,9 @@ function calculateSupplyView(plan, minute) {
     }).filter(Boolean);
     const window = supplyWindow(lineSeries, minute, deadline ?? minute);
     const currentPoint = plannedByMinute.get(minute);
-    const complete = jobs.every(j => j.finishedAt !== null && j.finishedAt <= j.deadline);
-    const finish = count && complete ? Math.max(...jobs.map(j => j.finishedAt)) : null;
-    const deadlineStatus = !count ? "対象なし" : complete ? "計画内完了" : "期限未達見込み";
-    return { id: line.id, name: line.name, count, deadlines, deadline, finish, ...window,
+    const completion = packingCompletion(jobs, count);
+    const { finish, deadlineStatus } = completion;
+    return { id: line.id, name: line.name, count, deadlines, deadline, finish, ...window, ...completion,
       deadlineStatus, riskStatus: deadlineStatus === "期限未達見込み" ? deadlineStatus : window.supplyStatus,
       wip: currentPoint?.wipByLine[line.id] ?? null, packed: currentPoint?.packedByLine[line.id] ?? null, estimated: true };
   });
@@ -103,4 +102,56 @@ function calculateSupplyView(plan, minute) {
       reconstructedDifference: internalDifference + outsourcedPlanned - outsourcedRequired - requiredAdjustment };
   }
   return { minute, series, ...overall, lines, reconciliation };
+}
+
+// Single line/job completion contract used by every view. Missing data is
+// distinct from a known unfinished job and a known completion after deadline.
+function packingCompletion(jobs, targetCount, unavailable = false) {
+  const invalid = unavailable || !Array.isArray(jobs) || !Number.isFinite(targetCount) || targetCount < 0 || jobs.some(j => !Number.isFinite(j.count) || j.count < 0);
+  let state = invalid ? "unavailable" : targetCount === 0 && jobs.every(j => j.count === 0) ? "no-demand" : "on-time";
+  const relevant = Array.isArray(jobs) ? jobs.filter(j => j.count > 0) : [];
+  if (!invalid && state !== "no-demand") {
+    if (!relevant.length || Math.abs(relevant.reduce((n,j)=>n+j.count,0)-targetCount)>PLAN_EPSILON || relevant.some(j=>!Number.isFinite(j.deadline) || j.finishedAt === undefined || j.finishedAt !== null && !Number.isFinite(j.finishedAt))) state="unavailable";
+    else if (relevant.some(j=>j.finishedAt === null)) state="unfinished";
+    else if (relevant.some(j=>j.finishedAt>j.deadline)) state="late";
+  }
+  const deadlineStatus = {"unavailable":"算出不可","no-demand":"対象なし","on-time":"計画内完了","unfinished":"期限未達見込み","late":"期限未達見込み"}[state];
+  return { completionState:state, deadlineStatus, planStatus: state === "late" || state === "unfinished" ? "期限内未達" : deadlineStatus,
+    finish: state === "on-time" || state === "late" ? Math.max(...relevant.map(j=>j.finishedAt)) : null };
+}
+function recentComparison(actuals, reference, windowMinutes) {
+  const empty={start:null,end:null,actualIncrement:null,referenceIncrement:null,actualSpeed:null,referenceSpeed:null,ratio:null};
+  if (!(windowMinutes>0) || actuals.length<2) return empty;
+  const end=actuals.at(-1),start=[...actuals].reverse().find(p=>p.minute<=end.minute-windowMinutes);
+  if (!start || !Number.isFinite(start.count) || !Number.isFinite(end.count) || end.count<start.count || end.minute<=start.minute) return empty;
+  const elapsed=end.minute-start.minute,actualIncrement=end.count-start.count;
+  const left=reference.find(p=>p.minute===start.minute),right=reference.find(p=>p.minute===end.minute);
+  const referenceIncrement=left && right && Number.isFinite(left.count) && Number.isFinite(right.count) && right.count>=left.count ? right.count-left.count : null;
+  return {start:start.minute,end:end.minute,actualIncrement,referenceIncrement,actualSpeed:actualIncrement/elapsed*60,
+    referenceSpeed:referenceIncrement===null?null:referenceIncrement/elapsed*60,
+    ratio:referenceIncrement>0?actualIncrement/referenceIncrement*100:null};
+}
+const TREND_LABELS=Object.freeze({ahead:"計画より先行",above:"計画以上（速度判定不可）","steady-unrated":"計画どおり（速度判定不可）",steady:"計画どおり",recovering:"計画より遅れ・回復傾向",slowing:"計画より遅れ・ペース低下",behind:"計画より遅れ（速度判定不可）",complete:"ピッキング完了",unavailable:"算出不可"});
+function progressTrend({actualCount,referenceCount,totalCount,comparison,delay,tolerance}) {
+  if (![actualCount,referenceCount,tolerance].every(Number.isFinite)) return "unavailable";
+  if (Number.isFinite(totalCount) && actualCount>=totalCount) return "complete";
+  const difference=actualCount-referenceCount;
+  const speedAvailable=Number.isFinite(comparison.referenceSpeed) && comparison.referenceSpeed>=0 && Number.isFinite(comparison.ratio);
+  if (!speedAvailable) {
+    if (difference>PLAN_EPSILON) return "above";
+    if (difference>=-PLAN_EPSILON || Number.isFinite(delay)&&delay<=tolerance) return "steady-unrated";
+    return "behind";
+  }
+  const allowance=comparison.referenceSpeed*tolerance/60;
+  if (difference>allowance+PLAN_EPSILON) return "ahead";
+  if (difference>=-PLAN_EPSILON || Number.isFinite(delay)&&delay<=tolerance) return "steady";
+  return comparison.ratio>=100?"recovering":"slowing";
+}
+function plannedPickingCompletion(plan) {
+  if (!plan?.model || plan.model.errors.length || !plan.model.batches || !plan.operational?.points?.length) return {state:"unavailable",minute:null,target:null};
+  const target=plan.model.batches.reduce((n,b)=>n+b.total,0);
+  if (!Number.isFinite(target)) return {state:"unavailable",minute:null,target:null};
+  if (target===0) return {state:"no-demand",minute:null,target};
+  const point=plan.operational.points.find(p=>Number.isFinite(p.count)&&p.count>=target-PLAN_EPSILON);
+  return {state:point?"complete":"unfinished",minute:point?.minute??null,target};
 }

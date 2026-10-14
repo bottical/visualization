@@ -36,3 +36,7 @@
 .supply-deficit{color:#ae3546;font-weight:700}
 .kpi-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:760px){.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-card .card-title{align-items:flex-start;flex-direction:column}.legend{justify-content:flex-start}.supply-metrics>div{min-width:0;flex-basis:100%}}
+
+/* Summary hierarchy: one shipment decision, four KPIs, supporting details. */
+.plan-summary h3{font-size:13px;margin:0 0 6px}.shipment-result{font-size:23px}.progress-trend{font-size:13px;margin:12px 0 8px}.progress-trend small{color:var(--muted);margin-left:10px}.time-info{font-size:11px;color:var(--muted);line-height:1.8}.analysis-details{margin-top:20px}.analysis-details>summary,.graph-details>summary,.allocation-details>summary{cursor:pointer;font-weight:700}.analysis-details p,.graph-details p{font-size:12px;line-height:1.7;color:var(--muted)}.analysis-details .value{font-size:19px;white-space:normal}.graph-details{font-size:12px;margin:10px 0}.allocation-details{margin-top:12px}.kpi{min-width:0}.kpi .value{white-space:normal;overflow-wrap:anywhere}
+@media(max-width:760px){.shipment-result{font-size:20px}.progress-trend small{display:block;margin:5px 0 0}.analysis-details{padding:14px}.kpi{padding:12px}.kpi .value{font-size:20px}.kpi .sub{overflow-wrap:anywhere}}
