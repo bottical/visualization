@@ -24,3 +24,15 @@
 .plan-summary .plan-constraint{font-weight:700}
 .plan-summary details{margin:10px 0}.plan-summary summary{cursor:pointer}
 .plan-summary .plan-observation{font-size:13px}
+
+.legend i.required{border-color:#ae3546;border-top-style:dashed}.legend [hidden]{display:none}
+.chart-controls{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:12px}
+.chart-controls label{display:flex;align-items:center;gap:7px;cursor:pointer;color:var(--navy);font-weight:700}
+.chart-controls input{width:auto;accent-color:#ae3546}.chart-controls input:focus-visible{outline:2px solid var(--navy)}
+.supply-metrics{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0 18px;padding:12px;background:#f4f6f8;border-radius:5px}
+.supply-metrics>div{flex:1;min-width:230px}.supply-metrics span,.supply-metrics small{display:block;color:var(--muted);font-size:11px}
+.supply-metrics strong{display:block;margin:5px 0;font-size:19px}.supply-metrics p,.supply-metrics details{flex-basis:100%;margin:0;font-size:11px;color:var(--muted)}
+#packing-summary-body small,#packing-detail-body small{display:block;font-size:10px;color:var(--muted);margin-top:4px}
+.supply-deficit{color:#ae3546;font-weight:700}
+.kpi-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:760px){.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-card .card-title{align-items:flex-start;flex-direction:column}.legend{justify-content:flex-start}.supply-metrics>div{min-width:0;flex-basis:100%}}

@@ -8,6 +8,7 @@ const context = { console, Date, confirm: () => true, window: {},
   document: { querySelector: () => ({ textContent: "" }), querySelectorAll: () => [] } };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync("planning.js", "utf8"), context);
+vm.runInContext(fs.readFileSync("visibility.js", "utf8"), context);
 const source = fs.readFileSync("app.js", "utf8");
 vm.runInContext(source.slice(0, source.indexOf('document.querySelectorAll(".tab")')), context);
 const copy = value => JSON.parse(JSON.stringify(value));
