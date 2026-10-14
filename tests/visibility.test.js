@@ -104,7 +104,7 @@ test('explicit supply evaluation states keep expiry separate from the adopted co
  assert.equal(c.calculateSupplyView(p,8).lines[0].evaluationState,'sufficient','exact deadline is still evaluated');
  const v=c.calculateSupplyView(p,9);assert.equal(v.evaluationState,'period-ended');
  for(const r of v.lines){assert.equal(r.evaluationState,'period-ended');assert.equal(r.supplyStatus,'評価期間終了');assert.equal(r.periodEnded,true);assert.equal(r.maximumShortage,null);assert.equal(r.firstFuture,null);assert.equal(c.supplyTone(r),'');assert.match(c.futureShortageText(r),/評価期間終了/);assert.equal(c.maximumShortageText(r),'評価期間終了');}
- assert.equal(v.lines[0].deadlineStatus,'期限未達見込み');assert.equal(c.deadlineTone(v.lines[0]),'bad');assert.equal(v.lines[1].deadlineStatus,'計画内完了');assert.equal(c.deadlineTone(v.lines[1]),'');
+ assert.equal(v.lines[0].deadlineStatus,'期限未達見込み');assert.equal(c.deadlineTone(v.lines[0]),'bad');assert.equal(v.lines[1].deadlineStatus,'計画内完了');assert.equal(c.deadlineTone(v.lines[1]),'good');
  assert.equal(v.lines[0].pastFirst,3);assert.equal(v.lines[0].pastMaximum,30);assert.equal(JSON.stringify(p),before);
 });
 test('unavailable data never becomes a sufficient or green evaluation',()=>{
@@ -119,7 +119,7 @@ test('manual multiple deadlines use the final deadline and preserve the exact-ti
 test('summary and detail use the same expired states and detail displays the start limit only once',()=>{
  const c=context(),p=afterDeadlineFixture();c.fakeView=c.calculateSupplyView(p,9);c.rows=c.fakeView.lines.map(r=>({id:r.id,name:r.name,count:r.count,estimated:true,normalizedShare:.5,effectiveCapacity:100,people:5,deadline:'00:08',finish:r.finish,planStatus:r.deadlineStatus==='計画内完了'?'計画内完了':'期限内未達',remainingEstimate:10,latestStartMinutes:5}));
  const elements={};c.document.querySelector=s=>elements[s]||={};vm.runInContext("state=initialPresetState();state.dailyInput.currentTime='00:09';getSupplyView=()=>fakeView;calculatePlannedPackingRows=()=>rows;renderPackingTable('#summary',false);renderPackingTable('#detail',true);renderSupplyMetrics()",c);
- for(const selector of ['#summary','#detail']){const html=elements[selector].innerHTML;assert.equal((html.match(/>評価期間終了<\/span>/g)||[]).length,2);assert.match(html,/status bad">期限未達見込み/);assert.match(html,/status ">期限内完了見込み/);assert.doesNotMatch(html,/status good/);assert.doesNotMatch(html,/供給条件充足|最大不足 0件|新規不足なし/);}
+ for(const selector of ['#summary','#detail']){const html=elements[selector].innerHTML;assert.equal((html.match(/>評価期間終了<\/span>/g)||[]).length,2);assert.match(html,/status bad">期限未達見込み/);assert.match(html,/status good">期限内完了見込み/);assert.doesNotMatch(html,/status good">評価期間終了/);assert.doesNotMatch(html,/供給条件充足|最大不足 0件|新規不足なし/);}
  assert.match(elements['#detail'].innerHTML,/00:03以降／最大30(?:\.0)?件（過去）/);
  assert.equal((elements['#summary'].innerHTML.match(/開始リミット /g)||[]).length,0);assert.doesNotMatch(elements['#detail'].innerHTML,/開始リミット /);assert.equal((elements['#detail'].innerHTML.match(/<td>00:05<\/td>/g)||[]).length,2);
  assert.match(elements['#supply-metrics'].innerHTML,/最大不足 評価期間終了/);assert.doesNotMatch(elements['#supply-metrics'].innerHTML,/最大不足 0件|新規不足なし/);
@@ -171,7 +171,7 @@ test('summary has four primary KPIs, derived completion and independently folded
 test('shipment labels preserve core feasibility types and general actions do not invent crew instructions',()=>{
  const c=context();for(const [scenario,status,title]of[['feasible','unknown','期限内完了可能（概算）'],['infeasible','unknown','期限内完了困難（概算）'],['feasible','feasible','計画成立（条件確認済み）'],['infeasible','infeasible','計画不成立（条件確認済み）'],['unknown','unknown','算出不可']]){
  assert.equal(c.shipmentPresentation({scenarioStatus:scenario,status,assumptions:status==='unknown'?['estimate']:[]}).title,title);}
- assert.equal(c.packingDeadlineText({completionState:'late'}),'期限超過完了見込み');assert.equal(c.packingAction({deadlineStatus:'期限未達見込み',evaluationState:'period-ended'}),'配置見直し');
+ assert.equal(c.packingDeadlineText({completionState:'late'}),'期限超過完了見込み');assert.equal(c.packingAction({deadlineStatus:'期限未達見込み',evaluationState:'period-ended'}),'実績確認・未処理対応');
  assert.equal(c.futureShortageText({evaluationState:'shortage',ongoing:true,firstFuture:600}),'現在不足中・10:00に再発');assert.equal(c.futureShortageText({evaluationState:'shortage',ongoing:false,firstFuture:600}),'10:00から不足');
 });
 
@@ -186,4 +186,25 @@ test('clock and batch scope change adopted completion without inventing unreleas
  vm.runInContext("state.dailyInput.currentTime='13:40'",c);const full=c.currentMetrics();assert.ok(full.plannedFinish.target>b.plannedFinish.target);assert.equal(full.forecastTarget,full.plannedFinish.target);
  vm.runInContext("state.dailyInput.currentTime='10:00';for(const row of Object.values(state.dailyInput.picks))row.batch13='';state.actuals=[{time:'09:30',totalCompleted:0},{time:'10:00',totalCompleted:1000}]",c);
  const partial=c.currentMetrics();assert.equal(partial.totals.totalCount,null);assert.equal(partial.forecastTarget,b.plannedFinish.target);assert.equal(partial.plannedFinish.target,b.plannedFinish.target);assert.ok(Number.isFinite(partial.finish));
+});
+
+test('deadline colors are independent of every supply evaluation state in both tables',()=>{
+ const c=context();for(const evaluationState of ['sufficient','shortage','period-ended','unavailable']){
+  for(const [deadlineStatus,tone]of[['計画内完了','good'],['期限未達見込み','bad'],['算出不可',''],['対象なし','']])assert.equal(c.deadlineTone({evaluationState,deadlineStatus}),tone);
+ }
+ const p=riskFixture();p.operational.jobs[0].finishedAt=8;const before=JSON.stringify(p);c.fakeView=c.calculateSupplyView(p,1);c.rows=c.fakeView.lines.map(r=>({id:r.id,name:r.name,count:r.count,normalizedShare:.5,effectiveCapacity:100,people:5,deadline:'00:08',finish:r.finish,planStatus:r.planStatus,remainingEstimate:10,latestStartMinutes:5}));
+ const elements={};c.document.querySelector=q=>elements[q]||={};vm.runInContext("getSupplyView=()=>fakeView;calculatePlannedPackingRows=()=>rows;renderPackingTable('#summary',false);renderPackingTable('#detail',true)",c);
+ for(const q of ['#summary','#detail']){assert.match(elements[q].innerHTML,/status good">期限内完了見込み/);assert.match(elements[q].innerHTML,/status warn">00:03から不足/);}
+ assert.equal(JSON.stringify(p),before);
+});
+test('missing comparison speed preserves cumulative position and explicitly marks speed unknown',()=>{
+ const c=context(),base={actualCount:101,referenceCount:100,totalCount:200,comparison:{referenceSpeed:null,ratio:null},delay:0,tolerance:15};
+ assert.equal(c.progressTrend(base),'above');assert.equal(c.progressTrend({...base,actualCount:100}),'steady-unrated');assert.equal(c.progressTrend({...base,actualCount:99,delay:10}),'steady-unrated');assert.equal(c.progressTrend({...base,actualCount:50,delay:30}),'behind');
+ assert.equal(c.progressTrend({...base,comparison:{referenceSpeed:0,ratio:null}}),'above');assert.equal(c.progressTrend({...base,comparison:{referenceSpeed:NaN,ratio:110}}),'above');
+ assert.equal(c.progressTrend({...base,comparison:{referenceSpeed:60,ratio:110}}),'steady');assert.equal(c.progressTrend({...base,actualCount:120,comparison:{referenceSpeed:60,ratio:110}}),'ahead');assert.equal(c.progressTrend({...base,actualCount:200}),'complete');
+ for(const trend of ['above','steady-unrated','behind']){c.trend=trend;const label=vm.runInContext('TREND_LABELS[trend]',c);assert.match(label,/速度判定不可/);assert.notEqual(c.statusClass(label),'good');}
+});
+test('expired actions distinguish unfinished work from model completion without changing deadline result',()=>{
+ const c=context();assert.equal(c.packingAction({evaluationState:'shortage',deadlineStatus:'期限未達見込み'}),'配置見直し');
+ assert.equal(c.packingAction({evaluationState:'period-ended',deadlineStatus:'期限未達見込み'}),'実績確認・未処理対応');assert.equal(c.packingAction({evaluationState:'period-ended',deadlineStatus:'計画内完了'}),'実績確認');
 });

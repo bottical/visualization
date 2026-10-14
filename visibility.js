@@ -131,14 +131,20 @@ function recentComparison(actuals, reference, windowMinutes) {
     referenceSpeed:referenceIncrement===null?null:referenceIncrement/elapsed*60,
     ratio:referenceIncrement>0?actualIncrement/referenceIncrement*100:null};
 }
-const TREND_LABELS=Object.freeze({ahead:"計画より先行",steady:"計画どおり",recovering:"計画より遅れ・回復傾向",slowing:"計画より遅れ・ペース低下",behind:"計画より遅れ（速度判定不可）",complete:"ピッキング完了",unavailable:"算出不可"});
+const TREND_LABELS=Object.freeze({ahead:"計画より先行",above:"計画以上（速度判定不可）","steady-unrated":"計画どおり（速度判定不可）",steady:"計画どおり",recovering:"計画より遅れ・回復傾向",slowing:"計画より遅れ・ペース低下",behind:"計画より遅れ（速度判定不可）",complete:"ピッキング完了",unavailable:"算出不可"});
 function progressTrend({actualCount,referenceCount,totalCount,comparison,delay,tolerance}) {
   if (![actualCount,referenceCount,tolerance].every(Number.isFinite)) return "unavailable";
   if (Number.isFinite(totalCount) && actualCount>=totalCount) return "complete";
-  const difference=actualCount-referenceCount,allowance=(comparison.referenceSpeed || 0)*tolerance/60;
+  const difference=actualCount-referenceCount;
+  const speedAvailable=Number.isFinite(comparison.referenceSpeed) && comparison.referenceSpeed>=0 && Number.isFinite(comparison.ratio);
+  if (!speedAvailable) {
+    if (difference>PLAN_EPSILON) return "above";
+    if (difference>=-PLAN_EPSILON || Number.isFinite(delay)&&delay<=tolerance) return "steady-unrated";
+    return "behind";
+  }
+  const allowance=comparison.referenceSpeed*tolerance/60;
   if (difference>allowance+PLAN_EPSILON) return "ahead";
   if (difference>=-PLAN_EPSILON || Number.isFinite(delay)&&delay<=tolerance) return "steady";
-  if (comparison.ratio===null) return "behind";
   return comparison.ratio>=100?"recovering":"slowing";
 }
 function plannedPickingCompletion(plan) {

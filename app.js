@@ -160,7 +160,7 @@ let showRequiredSupply = true;
 function signedCount(value) { if (!Number.isFinite(value)) return "算出不可"; const magnitude = Math.abs(value) <= PLAN_EPSILON ? 0 : Math.abs(value); return `${magnitude && value < 0 ? "−" : "+"}${magnitude && magnitude < 0.1 ? "0.1件未満" : formatNumber(magnitude, 1) + "件"}`; }
 function getSupplyView() { return calculateSupplyView(getPackingPlan(), timeToMinutes(state.dailyInput.currentTime)); }
 function supplyTone(risk) { return risk?.evaluationState === "shortage" ? "warn" : risk?.evaluationState === "sufficient" ? "good" : ""; }
-function deadlineTone(risk) { return risk?.deadlineStatus === "期限未達見込み" ? "bad" : !risk || risk.deadlineStatus === "算出不可" ? "" : supplyTone(risk); }
+function deadlineTone(risk) { return risk?.deadlineStatus === "期限未達見込み" ? "bad" : risk?.deadlineStatus === "計画内完了" ? "good" : ""; }
 function maximumShortageText(risk) {
   if (risk?.evaluationState === "period-ended") return "評価期間終了";
   return risk?.evaluationState === "unavailable" || !Number.isFinite(risk?.maximumShortage) ? "算出不可" : `${formatNumber(risk.maximumShortage, 1)}件`;
@@ -368,10 +368,10 @@ function packingDeadlineText(risk) {
   return {"on-time":"期限内完了見込み","late":"期限超過完了見込み","unfinished":"期限未達見込み","no-demand":"対象なし","unavailable":"算出不可"}[risk?.completionState] || (risk?.deadlineStatus === "計画内完了" ? "期限内完了見込み" : risk?.deadlineStatus || "算出不可");
 }
 function packingAction(risk) {
+  if (risk?.evaluationState === "period-ended") return risk.deadlineStatus === "期限未達見込み" ? "実績確認・未処理対応" : "実績確認";
   if (risk?.deadlineStatus === "期限未達見込み") return "配置見直し";
   if (!risk || risk.evaluationState === "unavailable") return "入力・実績確認";
   if (risk.completionState === "no-demand") return "対象なし";
-  if (risk.evaluationState === "period-ended") return "実績確認";
   return risk.evaluationState === "shortage" ? "供給・実績確認" : "継続監視";
 }
 function shipmentPresentation(evaluation) {
