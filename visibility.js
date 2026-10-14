@@ -71,7 +71,7 @@ function calculateSupplyView(plan, minute) {
   const overall = supplyWindow(series, minute, end);
   const lines = plan.model.lines.map(line => {
     const jobs = plan.operational.jobs.filter(j => j.lineId === line.id);
-    const count = jobs.reduce((n, j) => n + j.count, 0);
+    const count = plan.model.jobs.filter(j => j.lineId === line.id).reduce((n, j) => n + j.count, 0);
     const deadlines = [...new Set(jobs.map(j => j.deadline))].sort((a, b) => a - b);
     const deadline = deadlines.at(-1) ?? null;
     const lineSeries = plan.required.map(r => {

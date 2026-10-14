@@ -119,9 +119,9 @@ test('manual multiple deadlines use the final deadline and preserve the exact-ti
 test('summary and detail use the same expired states and detail displays the start limit only once',()=>{
  const c=context(),p=afterDeadlineFixture();c.fakeView=c.calculateSupplyView(p,9);c.rows=c.fakeView.lines.map(r=>({id:r.id,name:r.name,count:r.count,estimated:true,normalizedShare:.5,effectiveCapacity:100,people:5,deadline:'00:08',finish:r.finish,planStatus:r.deadlineStatus==='計画内完了'?'計画内完了':'期限内未達',remainingEstimate:10,latestStartMinutes:5}));
  const elements={};c.document.querySelector=s=>elements[s]||={};vm.runInContext("state=initialPresetState();state.dailyInput.currentTime='00:09';getSupplyView=()=>fakeView;calculatePlannedPackingRows=()=>rows;renderPackingTable('#summary',false);renderPackingTable('#detail',true);renderSupplyMetrics()",c);
- for(const selector of ['#summary','#detail']){const html=elements[selector].innerHTML;assert.equal((html.match(/>評価期間終了<\/span>/g)||[]).length,2);assert.match(html,/status bad">期限未達見込み/);assert.match(html,/status ">計画内完了/);assert.doesNotMatch(html,/status good/);assert.doesNotMatch(html,/供給条件充足|最大不足 0件|新規不足なし/);}
+ for(const selector of ['#summary','#detail']){const html=elements[selector].innerHTML;assert.equal((html.match(/>評価期間終了<\/span>/g)||[]).length,2);assert.match(html,/status bad">期限未達見込み/);assert.match(html,/status ">期限内完了見込み/);assert.doesNotMatch(html,/status good/);assert.doesNotMatch(html,/供給条件充足|最大不足 0件|新規不足なし/);}
  assert.match(elements['#detail'].innerHTML,/00:03以降／最大30(?:\.0)?件（過去）/);
- assert.equal((elements['#summary'].innerHTML.match(/開始リミット /g)||[]).length,2);assert.doesNotMatch(elements['#detail'].innerHTML,/開始リミット /);assert.equal((elements['#detail'].innerHTML.match(/<td>00:05<\/td>/g)||[]).length,2);
+ assert.equal((elements['#summary'].innerHTML.match(/開始リミット /g)||[]).length,0);assert.doesNotMatch(elements['#detail'].innerHTML,/開始リミット /);assert.equal((elements['#detail'].innerHTML.match(/<td>00:05<\/td>/g)||[]).length,2);
  assert.match(elements['#supply-metrics'].innerHTML,/最大不足 評価期間終了/);assert.doesNotMatch(elements['#supply-metrics'].innerHTML,/最大不足 0件|新規不足なし/);
 });
 
@@ -152,4 +152,38 @@ test('progress trend never replaces shipment feasibility, in either direction',(
  const c=context();const trend={actualCount:10,referenceCount:100,totalCount:200,comparison:{ratio:50,referenceSpeed:100},delay:30,tolerance:15};
  assert.equal(c.progressTrend(trend),'slowing');assert.equal(c.getPlanPresentation({scenarioStatus:'feasible',status:'unknown',assumptions:['estimate']}).tone,'warn');
  assert.equal(c.progressTrend({...trend,actualCount:100}),'steady');assert.equal(c.getPlanPresentation({scenarioStatus:'infeasible',status:'unknown',assumptions:['estimate']}).tone,'bad');
+});
+
+test('summary has four primary KPIs, derived completion and independently folded analysis',()=>{
+ const c=context(),elements={};c.document.querySelector=q=>elements[q]||={};
+ vm.runInContext('state=initialPresetState();renderChart=()=>{};renderSummary()',c);
+ const html=elements['#kpi-grid'].innerHTML;assert.equal((html.match(/class="kpi /g)||[]).length,4);
+ for(const label of ['ピッキング完了件数','計画との差','作業ペース','計画上のピッキング完了'])assert.ok(html.includes(label));
+ assert.match(html,/実績未入力/);assert.doesNotMatch(html,/現在ペースでの完了予測/);
+ assert.match(elements['#analysis-kpi-grid'].innerHTML,/比較用計画累計|現在ペースでの完了予測/);
+ assert.match(elements['#plan-summary'].innerHTML,/出荷期限の達成見込み/);assert.match(elements['#plan-summary'].innerHTML,/期限内完了可能（概算）/);
+ assert.equal((elements['#packing-summary-body'].innerHTML.match(/<td[ >]/g)||[]).length,25);
+ assert.doesNotMatch(elements['#packing-summary-body'].innerHTML,/開始リミット|最大不足|残梱包/);
+ vm.runInContext("state.actuals=[{time:'13:00',totalCompleted:8000},{time:'13:40',totalCompleted:9000}];renderSummary()",c);
+ const m=c.currentMetrics();assert.notEqual(m.plannedFinish.minute,m.finish);
+ assert.match(elements['#progress-trend'].innerHTML,/進捗の傾向/);
+});
+test('shipment labels preserve core feasibility types and general actions do not invent crew instructions',()=>{
+ const c=context();for(const [scenario,status,title]of[['feasible','unknown','期限内完了可能（概算）'],['infeasible','unknown','期限内完了困難（概算）'],['feasible','feasible','計画成立（条件確認済み）'],['infeasible','infeasible','計画不成立（条件確認済み）'],['unknown','unknown','算出不可']]){
+ assert.equal(c.shipmentPresentation({scenarioStatus:scenario,status,assumptions:status==='unknown'?['estimate']:[]}).title,title);}
+ assert.equal(c.packingDeadlineText({completionState:'late'}),'期限超過完了見込み');assert.equal(c.packingAction({deadlineStatus:'期限未達見込み',evaluationState:'period-ended'}),'配置見直し');
+ assert.equal(c.futureShortageText({evaluationState:'shortage',ongoing:true,firstFuture:600}),'現在不足中・10:00に再発');assert.equal(c.futureShortageText({evaluationState:'shortage',ongoing:false,firstFuture:600}),'10:00から不足');
+});
+
+test('missing adopted jobs cannot turn known demand into no demand or completed',()=>{
+ const c=context(),p=riskFixture();p.operational.jobs=p.operational.jobs.filter(j=>j.lineId!=='a');
+ assert.equal(c.calculateSupplyView(p,3).lines[0].completionState,'unavailable');assert.equal(c.calculateSupplyView(p,3).lines[0].deadlineStatus,'算出不可');assert.equal(c.deadlineTone(c.calculateSupplyView(p,3).lines[0]),'');
+});
+
+test('clock and batch scope change adopted completion without inventing unreleased demand',()=>{
+ const c=context();vm.runInContext("state=initialPresetState();state.dailyInput.currentTime='09:30'",c);const a=c.currentMetrics();
+ vm.runInContext("state.dailyInput.currentTime='10:00'",c);const b=c.currentMetrics();assert.ok(b.plannedFinish.target>a.plannedFinish.target);
+ vm.runInContext("state.dailyInput.currentTime='13:40'",c);const full=c.currentMetrics();assert.ok(full.plannedFinish.target>b.plannedFinish.target);assert.equal(full.forecastTarget,full.plannedFinish.target);
+ vm.runInContext("state.dailyInput.currentTime='10:00';for(const row of Object.values(state.dailyInput.picks))row.batch13='';state.actuals=[{time:'09:30',totalCompleted:0},{time:'10:00',totalCompleted:1000}]",c);
+ const partial=c.currentMetrics();assert.equal(partial.totals.totalCount,null);assert.equal(partial.forecastTarget,b.plannedFinish.target);assert.equal(partial.plannedFinish.target,b.plannedFinish.target);assert.ok(Number.isFinite(partial.finish));
 });

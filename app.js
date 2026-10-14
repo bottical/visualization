@@ -160,20 +160,20 @@ let showRequiredSupply = true;
 function signedCount(value) { if (!Number.isFinite(value)) return "算出不可"; const magnitude = Math.abs(value) <= PLAN_EPSILON ? 0 : Math.abs(value); return `${magnitude && value < 0 ? "−" : "+"}${magnitude && magnitude < 0.1 ? "0.1件未満" : formatNumber(magnitude, 1) + "件"}`; }
 function getSupplyView() { return calculateSupplyView(getPackingPlan(), timeToMinutes(state.dailyInput.currentTime)); }
 function supplyTone(risk) { return risk?.evaluationState === "shortage" ? "warn" : risk?.evaluationState === "sufficient" ? "good" : ""; }
-function deadlineTone(risk) { return risk?.deadlineStatus === "期限未達見込み" ? "bad" : supplyTone(risk); }
+function deadlineTone(risk) { return risk?.deadlineStatus === "期限未達見込み" ? "bad" : !risk || risk.deadlineStatus === "算出不可" ? "" : supplyTone(risk); }
 function maximumShortageText(risk) {
   if (risk?.evaluationState === "period-ended") return "評価期間終了";
   return risk?.evaluationState === "unavailable" || !Number.isFinite(risk?.maximumShortage) ? "算出不可" : `${formatNumber(risk.maximumShortage, 1)}件`;
 }
 function futureShortageText(risk) {
-  if (risk?.evaluationState === "period-ended") return "評価期間終了（期限経過）";
+  if (risk?.evaluationState === "period-ended") return "評価期間終了";
   if (!risk || risk.evaluationState === "unavailable") return "算出不可";
-  if (risk.ongoing) return risk.firstFuture === null ? "現在不足・継続分を含む" : `現在不足／新規再発 ${minutesToTime(risk.firstFuture)}`;
-  return risk.firstFuture === null ? "新規不足なし" : minutesToTime(risk.firstFuture);
+  if (risk.ongoing) return risk.firstFuture === null ? "現在不足中" : `現在不足中・${minutesToTime(risk.firstFuture)}に再発`;
+  return risk.firstFuture === null ? "不足予測なし" : `${minutesToTime(risk.firstFuture)}から不足`;
 }
 function renderSupplyMetrics() {
   const view = getSupplyView(), current = view.current;
-  document.querySelector("#supply-metrics").innerHTML = `<div><span>計画供給差 ${state.dailyInput.currentTime || "時刻未入力"}</span><strong>${signedCount(current?.difference)}</strong><small>採用計画 ${current ? formatNumber(current.planned) : "－"}件 − 理論必要 ${current ? formatNumber(current.required) : "－"}件</small></div><div><span>将来の新規不足</span><strong>${futureShortageText(view)}</strong><small>最大不足 ${maximumShortageText(view)}（現在以降のピーク）</small></div><p>正の差は安全余力・減員可能数量ではありません。期限可否は人員・仕掛・梱包を含む計画判定で確認してください。</p>${view.reconciliation && (Math.abs(view.reconciliation.outsourcedPlanned) > PLAN_EPSILON || Math.abs(view.reconciliation.requiredAdjustment) > PLAN_EPSILON) ? `<details><summary>全体と社内ライン合計の内訳</summary>社内供給差 ${signedCount(view.reconciliation.internalDifference)}、委託分供給差 ${signedCount(view.reconciliation.outsourcedDifference)}、必要累計補正 ${formatNumber(view.reconciliation.requiredAdjustment, 1)}件。全体差＝社内差＋委託差−必要累計補正。</details>` : ""}`;
+  document.querySelector("#supply-metrics").innerHTML = `<div><span>計画上の供給差 ${state.dailyInput.currentTime || "時刻未入力"}</span><strong>${signedCount(current?.difference)}</strong><small>採用計画 ${current ? formatNumber(current.planned) : "－"}件 − 理論必要 ${current ? formatNumber(current.required) : "－"}件</small></div><div><span>将来の新規不足</span><strong>${futureShortageText(view)}</strong><small>最大不足 ${maximumShortageText(view)}（現在以降のピーク）</small></div><p>正の差は安全余力・減員可能数量ではありません。期限可否は人員・仕掛・梱包を含む計画判定で確認してください。</p>${view.reconciliation && (Math.abs(view.reconciliation.outsourcedPlanned) > PLAN_EPSILON || Math.abs(view.reconciliation.requiredAdjustment) > PLAN_EPSILON) ? `<details><summary>全体と社内ライン合計の内訳</summary>社内供給差 ${signedCount(view.reconciliation.internalDifference)}、委託分供給差 ${signedCount(view.reconciliation.outsourcedDifference)}、必要累計補正 ${formatNumber(view.reconciliation.requiredAdjustment, 1)}件。全体差＝社内差＋委託差−必要累計補正。</details>` : ""}`;
 }
 function calculateActualProgress() {
   const start = timeToMinutes(state.settings.times.start);
@@ -189,9 +189,6 @@ function getContiguousActuals(actuals = calculateActualProgress()) {
   const result = [];
   for (const row of actuals) { if (!row.valid) break; result.push(row); }
   return result;
-}
-function calculateRecentSpeed(actuals) {
-  return recentComparison(actuals, [], validNonNegativeInteger(state.settings.recentWindowMinutes)).actualSpeed;
 }
 function calculateFinishEstimate(progressTimestamp, actualCount, totalCount, recentSpeed) { return recentSpeed > 0 && totalCount >= actualCount ? progressTimestamp + (totalCount - actualCount) / recentSpeed * 60 : null; }
 function calculatePackingLatestStart(deadline, buffer, hours) { const d = timeToMinutes(deadline); return d !== null && isFiniteNumber(buffer) && isFiniteNumber(hours) ? d - buffer - hours * 60 : null; }
@@ -232,7 +229,7 @@ function updateStatePath(path, value, now = new Date()) {
     state.dailyInput.currentTime = getCurrentTenMinuteTime(now, value);
   }
 }
-function statusClass(status) { return ["完了", "先行", "順調", "開始前", "計画内完了", "対象なし"].includes(status) ? "good" : ["遅延・回復中", "開始期限到来", "計画比遅れ"].includes(status) ? "warn" : ["遅延拡大", "締切超過", "期限内未達"].includes(status) ? "bad" : ""; }
+function statusClass(status) { return ["ピッキング完了", "計画より先行", "計画どおり", "完了", "先行", "順調", "開始前", "計画内完了", "対象なし"].includes(status) ? "good" : ["計画より遅れ・回復傾向", "計画より遅れ（速度判定不可）", "遅延・回復中", "開始期限到来", "計画比遅れ"].includes(status) ? "warn" : ["計画より遅れ・ペース低下", "遅延拡大", "締切超過", "期限内未達"].includes(status) ? "bad" : ""; }
 
 function currentMetrics() {
   const totals = getPickTotals(), ideal = calculateIdealProgress(), actual = getContiguousActuals(), currentMinute = timeToMinutes(state.dailyInput.currentTime);
@@ -312,7 +309,7 @@ function renderStaffingSummary() {
     ["計画上の梱包配置人数", packingPeople === null ? "－" : `${formatNumber(packingPeople)}人`],
     ["計画上のピッキング配置人数", pickingPeople === null ? "－" : `${formatNumber(pickingPeople)}人`],
     ["次の人員移動候補", nextPackingStart === null ? "候補なし" : `${minutesToDeadlineTime(nextPackingStart)} ${escapeHtml(nextMovement.line)}へ${nextMovement.people}人`],
-    ["人員余力", staffingStatus === null ? `<span class="status">未判定</span>` : `<span class="status ${staffingStatus === "充足" ? "good" : staffingStatus === "要確認" ? "warn" : "bad"}">${staffingStatus}</span>`]
+    ["配置人員の充足状況", staffingStatus === null ? `<span class="status">未判定</span>` : `<span class="status ${staffingStatus === "充足" ? "good" : staffingStatus === "要確認" ? "warn" : "bad"}">${staffingStatus}</span>`]
   ];
   document.querySelector("#staffing-summary").innerHTML = items.map(([label, value]) => `<div class="staffing-metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
   const allocation = calculatePickingStaffAllocation();
@@ -322,26 +319,34 @@ function renderStaffingSummary() {
   else allocationBox.innerHTML = `<div class="allocation-grid">${allocation.rows.map(row => `<div class="allocation-item"><span>${row.name}</span><strong>${row.people}人</strong><small>作業量比 ${formatNumber(row.share * 100, 1)}%</small></div>`).join("")}</div><div class="allocation-total"><span>合計</span><strong>${allocation.totalPeople}人</strong></div>`;
 }
 function renderSummary() {
-  const m = currentMetrics(); const ready = m.current && m.idealPoint; const pace = ready && m.recentSpeed !== null && m.idealSpeed > 0 ? m.recentSpeed / m.idealSpeed * 100 : null;
+  const m = currentMetrics(), ready = m.current && m.idealPoint;
   const evaluationTime = isFiniteNumber(m.evaluationMinute) ? minutesToTime(m.evaluationMinute) : "未入力";
+  const interval = m.comparison.start === null ? "比較区間不足" : `${minutesToTime(m.comparison.start)}〜${minutesToTime(m.comparison.end)}／同一区間で比較`;
+  const plannedFinish = m.plannedFinish.state === "no-demand" ? "対象なし" : m.plannedFinish.minute === null ? "算出不可" : minutesToTime(m.plannedFinish.minute);
   const items = [
-    ["作業進捗（基準計画比）", `<span class="status ${statusClass(m.status)}">${m.status}</span>`, "期限判定は別表示", "highlight"],
-    ["基準計画累計（現行条件）", m.idealPoint ? `${formatNumber(m.idealPoint.count)}件` : "算出不可", `${evaluationTime}／実績なしで計算した比較用計画`, ""],
-    ["実績累計", m.current ? `${formatNumber(m.current.count)}件` : "－", m.current ? `観測 ${minutesToTime(m.current.minute)}` : "実績待ち", "actual-kpi"],
-    ["基準計画との差", ready ? signedCount(m.diffCount) : "算出不可", `${evaluationTime} 実績−基準計画`, ""],
-    ["理論必要供給との差", ready ? signedCount(m.actualRequiredDifference) : "算出不可", `${evaluationTime} 実績−理論必要（ライン別は未確認）`, ""],
-    ["基準計画に対する遅れ", ready && m.delay !== null ? `${formatNumber(m.delay, 1)}分` : "算出不可", `${evaluationTime} 基準計画上の到達時刻で比較`, ""],
-    ["直近ペース（基準計画比）", pace !== null ? `${formatNumber(pace)}%` : "算出不可", `実績 ${m.recentSpeed === null ? "－" : formatNumber(m.recentSpeed)}／基準 ${m.referenceSpeed === null ? "－" : formatNumber(m.referenceSpeed)} 件/時`, "actual-kpi"],
-    ["ピッキング終了見込み", m.finish !== null && m.finish !== undefined ? minutesToTime(m.finish) : "－", "直近実績速度から概算", ""]
+    ["ピッキング完了件数", m.current ? `${formatNumber(m.current.count)}件` : "実績未入力", m.current ? `観測 ${evaluationTime}` : "有効な実績を入力してください", "actual-kpi"],
+    ["計画との差", ready ? signedCount(m.diffCount) : "算出不可", `${evaluationTime} 実績−比較用計画`, ""],
+    ["作業ペース", m.comparison.ratio === null ? m.current ? "算出不可" : "実績未入力" : `${formatNumber(m.comparison.ratio)}%`, interval, "actual-kpi"],
+    ["計画上のピッキング完了", plannedFinish, `採用配置による予測／対象 ${formatNumber(m.plannedFinish.target)}件`, ""]
   ];
-  document.querySelector("#progress-time-info").innerHTML = `<div class="mini-metric"><span>現在時刻</span><strong>${state.dailyInput.currentTime || "－"}</strong></div><div class="mini-metric"><span>実績最終更新</span><strong>${m.current ? minutesToTime(m.current.minute) : "－"}</strong></div><div class="mini-metric"><span>データ経過時間</span><strong>${isFiniteNumber(m.dataAge) ? `${m.dataAge}分` : "－"}</strong></div>`;
-  document.querySelector("#kpi-grid").innerHTML = items.map(x => `<div class="kpi ${x[3]}"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join("");
-  renderStaffingSummary();
-  renderPlanSummary();
-  renderSupplyMetrics();
-  const t = state.settings.times; document.querySelector("#event-strip").innerHTML = [[t.start,"開始"],[t.batch10,"バッチ追加"],[t.batch13,"バッチ追加"],[t.alert,"警戒ライン"]].map(x => `<span class="event"><strong>${x[0]}</strong> ${x[1]}</span>`).join("");
+  const analysis = [
+    ["比較用計画累計", m.idealPoint ? `${formatNumber(m.idealPoint.count)}件` : "算出不可", `${evaluationTime}／実績を反映せず現行条件から再計算`, ""],
+    ["必要供給との差", ready ? signedCount(m.actualRequiredDifference) : "算出不可", `${evaluationTime} 実績−理論必要供給`, ""],
+    ["計画からの遅れ時間", ready && m.delay !== null ? `${formatNumber(m.delay,1)}分` : "算出不可", "比較用計画で同件数に到達した時刻との差", ""],
+    ["現在ペースでの完了予測", isFiniteNumber(m.finish) ? minutesToTime(m.finish) : "算出不可", `直近実績速度の外挿／${m.totals.totalCount === null ? "到来済みバッチ" : "当日の既知全バッチ"} ${formatNumber(m.forecastTarget)}件`, ""],
+    ["実績速度／比較用計画速度", `${m.recentSpeed === null ? "－" : formatNumber(m.recentSpeed)}／${m.referenceSpeed === null ? "－" : formatNumber(m.referenceSpeed)}`, `${interval} 件/時`, ""]
+  ];
+  const cards = rows => rows.map(x=>`<div class="kpi ${x[3]}"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join("");
+  document.querySelector("#kpi-grid").innerHTML = cards(items);
+  document.querySelector("#analysis-kpi-grid").innerHTML = cards(analysis);
+  document.querySelector("#progress-trend").innerHTML = `進捗の傾向：<span class="status ${statusClass(m.status)}">${m.status}</span><small>期限達成見込みとは独立した補助指標</small>`;
+  document.querySelector("#progress-time-info").innerHTML = `現在時刻 ${state.dailyInput.currentTime || "－"}　｜　実績最終更新 ${m.current ? minutesToTime(m.current.minute) : "－"}　｜　データ経過時間 ${isFiniteNumber(m.dataAge) ? m.dataAge + "分" : "－"}`;
+  renderStaffingSummary(); renderPlanSummary(); renderSupplyMetrics();
+  const t = state.settings.times;
+  document.querySelector("#event-strip").innerHTML = [[t.start,"開始"],[t.batch10,"バッチ追加"],[t.batch13,"バッチ追加"],[t.alert,"警戒ライン"]].map(x=>`<span class="event"><strong>${x[0]}</strong> ${x[1]}</span>`).join("");
   const packing = calculatePlannedPackingRows();
-  renderPackingTable("#packing-summary-body", false); renderChart(m.ideal, m.actual, { currentMinute: isFiniteNumber(m.currentMinute) ? m.currentMinute : timeToMinutes(state.dailyInput.currentTime), finishMinute: m.finish, packing, required: getPackingPlan().required, batchMinutes: [timeToMinutes(t.batch10), timeToMinutes(t.batch13)] });
+  renderPackingTable("#packing-summary-body",false);
+  renderChart(m.ideal,m.actual,{currentMinute:isFiniteNumber(m.currentMinute)?m.currentMinute:timeToMinutes(state.dailyInput.currentTime),finishMinute:m.finish,packing,required:getPackingPlan().required,batchMinutes:[timeToMinutes(t.batch10),timeToMinutes(t.batch13)]});
 }
 function renderPickTable() {
   const totals = getPickTotals();
@@ -355,8 +360,24 @@ function renderPickTable() {
 }
 function packingStatus(line) { const now = timeToMinutes(state.dailyInput.currentTime), deadline = timeToMinutes(line.deadline); if (line.count === null || now === null) return "未判定"; if (line.effectiveCapacity === null || line.latestStartMinutes === null || deadline === null) return "算出不可"; if (now < Math.floor(line.latestStartMinutes)) return "開始前"; if (now <= deadline) return "開始期限到来"; return "締切超過"; }
 function formatPlannedPackingFinish(finish, status) {
+  if (isFiniteNumber(finish)) return minutesToTime(finish);
   if (status === "算出不可" || status === "期限内未達" || status === "対象なし") return status;
   return isFiniteNumber(finish) ? minutesToTime(finish) : "算出不可";
+}
+function packingDeadlineText(risk) {
+  return {"on-time":"期限内完了見込み","late":"期限超過完了見込み","unfinished":"期限未達見込み","no-demand":"対象なし","unavailable":"算出不可"}[risk?.completionState] || (risk?.deadlineStatus === "計画内完了" ? "期限内完了見込み" : risk?.deadlineStatus || "算出不可");
+}
+function packingAction(risk) {
+  if (risk?.deadlineStatus === "期限未達見込み") return "配置見直し";
+  if (!risk || risk.evaluationState === "unavailable") return "入力・実績確認";
+  if (risk.completionState === "no-demand") return "対象なし";
+  if (risk.evaluationState === "period-ended") return "実績確認";
+  return risk.evaluationState === "shortage" ? "供給・実績確認" : "継続監視";
+}
+function shipmentPresentation(evaluation) {
+  const p = getPlanPresentation(evaluation);
+  const title = {"概算：期限内完了可能":"期限内完了可能（概算）","概算：期限内完了困難":"期限内完了困難（概算）","計画成立（モデル上）":"計画成立（条件確認済み）","計画不成立":"計画不成立（条件確認済み）"}[p.title] || p.title;
+  return {...p,title};
 }
 function renderPackingTable(selector, detail) {
   const buffer = valueOrNull(state.dailyInput.bufferMinutes), rows = calculatePlannedPackingRows();
@@ -367,11 +388,11 @@ function renderPackingTable(selector, detail) {
     const maximum = maximumShortageText(r);
     const deadlines = r?.deadlines.length ? r.deadlines.map(minutesToTime).join("／") : r ? "対象なし" : "算出不可";
     const finish = formatPlannedPackingFinish(x.finish, x.planStatus);
-    const supply = r?.supplyStatus || "算出不可", deadlineStatus = r?.deadlineStatus || "算出不可";
+    const supply = futureShortageText(r), deadlineStatus = packingDeadlineText(r);
     const name = `<td><strong>${escapeHtml(x.name)}</strong></td>`;
     const count = `<td class="number">${x.count === null ? "－" : `${formatNumber(x.count)}件${x.estimated ? "（概算配分）" : ""}`}</td>`;
-    const finishCell = `<td>${finish}${x.remainingEstimate === null ? "" : `<small>残梱包推定 ${formatNumber(x.remainingEstimate)}件</small>`}${detail ? "" : `<small>開始リミット ${x.latestStartMinutes === null ? "算出不可" : minutesToDeadlineTime(x.latestStartMinutes)}</small>`}</td>`;
-    if (!detail) return `<tr>${name}${count}<td class="number ${r?.evaluationState === "shortage" && r?.current?.difference < 0 ? "supply-deficit" : ""}">${gap}<small>${now}／仕掛推定 ${r?.wip === null || !r ? "－" : formatNumber(r.wip)}件</small></td><td>${futureShortageText(r)}<small>最大不足 ${maximum}</small></td>${finishCell}<td>${deadlines}</td><td><span class="status ${supplyTone(r)}">${supply}</span></td><td><span class="status ${deadlineTone(r)}">${deadlineStatus}</span></td></tr>`;
+    const finishCell = `<td>${finish}${x.remainingEstimate === null ? "" : `<small>残梱包推定 ${formatNumber(x.remainingEstimate)}件</small>`}</td>`;
+    if (!detail) return `<tr>${name}<td><span class="status ${deadlineTone(r)}">${deadlineStatus}</span></td><td>${finish}</td><td><span class="status ${supplyTone(r)}">${supply}</span></td><td>${packingAction(r)}</td></tr>`;
     const past = !r ? "算出不可" : r.pastFirst === null ? "過去不足なし" : `${minutesToTime(r.pastFirst)}以降／最大${formatNumber(r.pastMaximum, 1)}件（過去）`;
     return `<tr>${name}<td class="number">${formatNumber(x.normalizedShare * 100,2)}%</td>${count}<td class="number">${x.effectiveCapacity === null ? "算出不可" : `${formatNumber(x.effectiveCapacity)}件/時`}</td><td>${x.people === null ? "未入力" : `${x.people}人${x.id === "manual" ? "（設定上限）" : "（固定）"}`}</td><td>${x.deadline}</td><td>${buffer === null ? "未入力" : `${buffer}分`}</td>${finishCell}<td>${x.latestStartMinutes === null ? "算出不可" : minutesToDeadlineTime(x.latestStartMinutes)}</td><td><span class="status ${deadlineTone(r)}">${deadlineStatus}</span></td><td class="number">${gap}<small>評価 ${now}</small></td><td>${futureShortageText(r)}</td><td class="number">${maximum}</td><td class="number">${r?.wip === null || !r ? "算出不可" : formatNumber(r.wip) + "件"}</td><td>${deadlines}</td><td><span class="status ${supplyTone(r)}">${supply}</span></td><td>${past}</td></tr>`;
   }).join("");
@@ -380,7 +401,7 @@ function renderPackingDetail() { renderPackingTable("#packing-detail-body", true
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
 function renderPlanSummary() {
   const { model, evaluation, shortages, observation } = getPackingPlan();
-  const presentation = getPlanPresentation(evaluation);
+  const presentation = shipmentPresentation(evaluation);
   const reasons = [...evaluation.reasons];
   const observations = [];
   const actual = getContiguousActuals().filter(row => row.minute <= model.current).at(-1);
@@ -395,13 +416,13 @@ function renderPlanSummary() {
   const pastLatest = lines.some(line => line.count > 0 && line.latestStartMinutes !== null && model.current > line.latestStartMinutes);
   if (pastLatest) observations.push("開始リミットを過ぎたラインがあります。実稼働・梱包実績は未取得のため、実際の残処理量・完了は未確認です。");
   const box = document.querySelector("#plan-summary");
-  box.className = `plan-summary ${observations.length && presentation.tone === "good" ? "warn" : presentation.tone}`;
+  box.className = `plan-summary ${presentation.tone}`;
   const firstShortage = shortages.filter(p => p.minute <= model.current && model.times.slice(1).includes(p.minute)).at(-1) || shortages.find(p => p.minute <= model.current);
   const shortageText = firstShortage ? `必要供給と目標の乖離：${minutesToTime(firstShortage.minute)}に${formatNumber(firstShortage.count)}件不足（理論必要${formatNumber(firstShortage.required)}件／目標${formatNumber(firstShortage.target)}件）。期限可否は人員・ライン別供給・仕掛を含めて別途判定します。` : "";
   const details = [...reasons, ...evaluation.assumptions, ...observations, ...shortages.filter(p => model.times.slice(1).includes(p.minute)).map(p => `${minutesToTime(p.minute)} バッチ到来時の必要供給不足：${formatNumber(p.count)}件（必要${formatNumber(p.required)}件／目標${formatNumber(p.target)}件）`)];
   const planningBasis = observation.last ? `実績反映の概算再計画：最終ピック観測 ${minutesToTime(observation.last.minute)}、現在との差 ${observation.age}分。ライン別供給・梱包済・仕掛・残梱包は推定です。` : "実績なし：計画開始時点からの概算配置計画。";
   const assumptions = evaluation.assumptions.length ? "梱包先別件数・初期仕掛・稼働時刻など、適用中の仮定は下の一覧で確認できます。詳細条件の確認により結果が変わる可能性があります。" : "必要な入力条件は確認済みです。";
-  box.innerHTML = `<strong>${presentation.title}</strong><p>${presentation.description}</p><p>${planningBasis}</p><p>配置探索：${evaluation.search?.tested ?? 0}候補／上限${evaluation.search?.limit ?? 160}（5分単位候補・1分単位検証）</p>${reasons.length ? `<p class="plan-constraint">主な制約：${escapeHtml(reasons[0])}</p>` : ""}${shortageText ? `<p class="plan-constraint">${escapeHtml(shortageText)}</p>` : ""}<p class="plan-confirmation">${presentation.confirmation} — ${assumptions}</p>${details.length ? `<details><summary>判定根拠・適用中の仮定・実績の確認（${details.length}件）</summary><ul>${details.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul><p>稼働開始可能時刻の仮定は設備が早期稼働可能という意味です。人員や仕掛の確保を意味せず、人員・仕掛供給制約は引き続き適用します。</p></details>` : ""}${observations.length ? `<p class="plan-observation">実績・稼働の確認：${escapeHtml(observations[0])}</p>` : ""}<p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish, finishStatus)}　｜　出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><small>入力条件と有効なピッキング実績から同一エンジンで再計算した推定計画です。実梱包実績は未取得です。対象は到来済みバッチです（未来バッチは未反映）。実際の梱包完了を保証しません。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。別の配置方法で解決できる可能性があります。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</small>`;
+  box.innerHTML = `<h3>出荷期限の達成見込み</h3><strong class="shipment-result">${presentation.title}</strong><p>${presentation.description}</p>${reasons.length ? `<p class="plan-constraint">主な制約：${escapeHtml(reasons[0])}</p>` : ""}<p class="plan-confirmation">${presentation.confirmation}${evaluation.assumptions.length ? " — 仮定条件あり。詳細確認により結果が変わる可能性があります。" : ""}</p><p>計画上の梱包完了見込み：${formatPlannedPackingFinish(finish,finishStatus)}<br>出荷引渡し期限：ゆうパケット ${escapeHtml(state.settings.times.packetDeadline)}／ゆうパック等 ${escapeHtml(state.settings.times.parcelDeadline)}</p><details><summary>判定根拠・仮定条件・計算範囲</summary><p>${planningBasis}</p><p>配置探索：${evaluation.search?.tested ?? 0}候補／上限${evaluation.search?.limit ?? 160}（5分単位候補・1分単位検証）</p><p>${assumptions}</p>${shortageText ? `<p>${escapeHtml(shortageText)}</p>` : ""}<ul>${details.map(reason=>`<li>${escapeHtml(reason)}</li>`).join("")}</ul><p>稼働開始可能時刻の仮定は設備が早期稼働可能という意味です。人員や仕掛の確保を意味せず、人員・仕掛供給制約を適用します。</p><p>有効なピッキング実績から同一エンジンで再計算した推定計画です。対象は到来済みバッチです（未来バッチは未反映）。実梱包実績は未取得で、実際の完了を保証しません。別の配置方法で解決できる可能性があります。ライン別供給はバッチ内構成比のモデルです。稼働は仕掛到着後、期限順で人員を配置します。配置の最適化・注文単位の実対応・梱包実績連携は未対応です。</p></details>`;
 }
 function calculatePlannedPackingRows() {
   const { model, operational: feasible } = getPackingPlan();
@@ -488,7 +509,7 @@ function renderValidationMessages() {
 function truncateAtFirstMissing(points) { const missing = points.findIndex(point => point.count === null); return points.slice(0, missing < 0 ? points.length : missing); }
 function getChartMarkers({ currentMinute, finishMinute, packing = [], batchMinutes = [] } = {}) {
   const markers = packing.filter(line => line.count > 0 && isFiniteNumber(line.latestStartMinutes)).map(line => ({ type: "packing", minute: line.latestStartMinutes, label: `${line.name} 開始リミット ${minutesToDeadlineTime(line.latestStartMinutes)}`, isPast: isFiniteNumber(currentMinute) && line.latestStartMinutes <= currentMinute }));
-  if (isFiniteNumber(finishMinute)) markers.push({ type: "finish", minute: finishMinute, label: `ピッキング終了見込み ${minutesToTime(finishMinute)}` });
+  if (isFiniteNumber(finishMinute)) markers.push({ type: "finish", minute: finishMinute, label: `現在ペースでの完了予測 ${minutesToTime(finishMinute)}` });
   if (isFiniteNumber(currentMinute)) markers.push({ type: "current", minute: currentMinute, label: `現在 ${minutesToTime(currentMinute)}` });
   for (const minute of batchMinutes.filter(isFiniteNumber)) markers.push({ type: "batch", minute, label: `${minutesToTime(minute)} バッチ追加（必要条件更新）` });
   return markers;
