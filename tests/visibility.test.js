@@ -94,3 +94,33 @@ test('correcting an observed total updates both baseline and required KPI gaps w
  vm.runInContext("state.actuals[0].totalCompleted=9000",c);const b=c.currentMetrics();
  assert.equal(b.diffCount-a.diffCount,1000);assert.equal(b.actualRequiredDifference-a.actualRequiredDifference,1000);assert.equal(b.idealPoint.count,a.idealPoint.count);assert.equal(b.ideal.find(p=>p.minute===780).count,9000);assert.equal(b.evaluationMinute,780);assert.equal(b.dataAge,40);
 });
+
+function afterDeadlineFixture(){const p=riskFixture();p.required.push({minute:9,count:360,byLine:{a:160,b:200,outsourced:0}});p.operational.points.push({...p.operational.points.at(-1),minute:9});p.displayed.push({minute:9,count:360});return p;}
+test('explicit supply evaluation states keep expiry separate from the adopted completion result',()=>{
+ const c=context(),p=afterDeadlineFixture(),before=JSON.stringify(p);
+ assert.equal(c.calculateSupplyView(p,1).lines[1].evaluationState,'sufficient');
+ assert.equal(c.calculateSupplyView(p,1).lines[0].evaluationState,'shortage','future deficit');
+ assert.equal(c.calculateSupplyView(p,3).lines[0].evaluationState,'shortage','current deficit');
+ assert.equal(c.calculateSupplyView(p,8).lines[0].evaluationState,'sufficient','exact deadline is still evaluated');
+ const v=c.calculateSupplyView(p,9);assert.equal(v.evaluationState,'period-ended');
+ for(const r of v.lines){assert.equal(r.evaluationState,'period-ended');assert.equal(r.supplyStatus,'評価期間終了');assert.equal(r.periodEnded,true);assert.equal(r.maximumShortage,null);assert.equal(r.firstFuture,null);assert.equal(c.supplyTone(r),'');assert.match(c.futureShortageText(r),/評価期間終了/);assert.equal(c.maximumShortageText(r),'評価期間終了');}
+ assert.equal(v.lines[0].deadlineStatus,'期限未達見込み');assert.equal(c.deadlineTone(v.lines[0]),'bad');assert.equal(v.lines[1].deadlineStatus,'計画内完了');assert.equal(c.deadlineTone(v.lines[1]),'');
+ assert.equal(v.lines[0].pastFirst,3);assert.equal(v.lines[0].pastMaximum,30);assert.equal(JSON.stringify(p),before);
+});
+test('unavailable data never becomes a sufficient or green evaluation',()=>{
+ const c=context(),p=riskFixture();p.model.errors=['必須入力不足'];const v=c.calculateSupplyView(p,3);
+ assert.equal(v.evaluationState,'unavailable');assert.equal(v.supplyStatus,'算出不可');assert.equal(v.maximumShortage,null);assert.equal(c.futureShortageText(v),'算出不可');assert.equal(c.maximumShortageText(v),'算出不可');assert.equal(c.supplyTone(v),'');assert.equal(c.deadlineTone(v),'');
+ const missing=c.calculateSupplyView(riskFixture(),99);assert.equal(missing.evaluationState,'unavailable');assert.ok(missing.lines.every(r=>r.evaluationState==='unavailable'&&r.supplyStatus==='算出不可'));
+});
+test('manual multiple deadlines use the final deadline and preserve the exact-time boundary',()=>{
+ const c=context(),p=afterDeadlineFixture();p.operational.jobs=[{lineId:'a',count:80,deadline:6,finishedAt:6},{lineId:'a',count:80,deadline:8,finishedAt:null},p.operational.jobs[1]];p.model.jobs=p.operational.jobs;p.model.lines[0].name='手梱包';
+ assert.notEqual(c.calculateSupplyView(p,7).lines[0].evaluationState,'period-ended');assert.notEqual(c.calculateSupplyView(p,8).lines[0].evaluationState,'period-ended');assert.equal(c.calculateSupplyView(p,9).lines[0].evaluationState,'period-ended');assert.deepEqual(copy(c.calculateSupplyView(p,9).lines[0].deadlines),[6,8]);
+});
+test('summary and detail use the same expired states and detail displays the start limit only once',()=>{
+ const c=context(),p=afterDeadlineFixture();c.fakeView=c.calculateSupplyView(p,9);c.rows=c.fakeView.lines.map(r=>({id:r.id,name:r.name,count:r.count,estimated:true,normalizedShare:.5,effectiveCapacity:100,people:5,deadline:'00:08',finish:r.finish,planStatus:r.deadlineStatus==='計画内完了'?'計画内完了':'期限内未達',remainingEstimate:10,latestStartMinutes:5}));
+ const elements={};c.document.querySelector=s=>elements[s]||={};vm.runInContext("state=initialPresetState();state.dailyInput.currentTime='00:09';getSupplyView=()=>fakeView;calculatePlannedPackingRows=()=>rows;renderPackingTable('#summary',false);renderPackingTable('#detail',true);renderSupplyMetrics()",c);
+ for(const selector of ['#summary','#detail']){const html=elements[selector].innerHTML;assert.equal((html.match(/>評価期間終了<\/span>/g)||[]).length,2);assert.match(html,/status bad">期限未達見込み/);assert.match(html,/status ">計画内完了/);assert.doesNotMatch(html,/status good/);assert.doesNotMatch(html,/供給条件充足|最大不足 0件|新規不足なし/);}
+ assert.match(elements['#detail'].innerHTML,/00:03以降／最大30(?:\.0)?件（過去）/);
+ assert.equal((elements['#summary'].innerHTML.match(/開始リミット /g)||[]).length,2);assert.doesNotMatch(elements['#detail'].innerHTML,/開始リミット /);assert.equal((elements['#detail'].innerHTML.match(/<td>00:05<\/td>/g)||[]).length,2);
+ assert.match(elements['#supply-metrics'].innerHTML,/最大不足 評価期間終了/);assert.doesNotMatch(elements['#supply-metrics'].innerHTML,/最大不足 0件|新規不足なし/);
+});

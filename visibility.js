@@ -37,6 +37,7 @@ function requiredDrawPoints(points, batchMinutes) {
   });
   return result;
 }
+const SUPPLY_STATUS = Object.freeze({ sufficient: "供給条件充足", shortage: "必要供給不足", "period-ended": "評価期間終了", unavailable: "算出不可" });
 function supplyWindow(series, minute, deadline) {
   const current = series.find(p => p.minute === minute) || null;
   const window = series.filter(p => p.minute >= minute && p.minute <= deadline);
@@ -49,13 +50,15 @@ function supplyWindow(series, minute, deadline) {
     previousNegative = negative;
   }
   const negative = window.filter(p => p.difference < -PLAN_EPSILON);
-  return { current, firstFuture, ongoing: !!current && current.difference < -PLAN_EPSILON,
+  const evaluationState = !current || !Number.isFinite(current.difference) ? "unavailable" : minute > deadline ? "period-ended" : negative.length ? "shortage" : "sufficient";
+  const evaluating = evaluationState === "sufficient" || evaluationState === "shortage";
+  return { evaluationState, supplyStatus: SUPPLY_STATUS[evaluationState], periodEnded: evaluationState === "period-ended", current, firstFuture: evaluating ? firstFuture : null, ongoing: !!current && current.difference < -PLAN_EPSILON,
     firstInWindow: negative[0]?.minute ?? null,
-    maximumShortage: Math.max(0, ...negative.map(p => -p.difference)),
+    maximumShortage: evaluating ? Math.max(0, ...negative.map(p => -p.difference)) : null,
     pastFirst: past[0]?.minute ?? null, pastMaximum: Math.max(0, ...past.map(p => -p.difference)) };
 }
 function calculateSupplyView(plan, minute) {
-  const empty = { minute, current: null, lines: [], series: [], firstFuture: null, maximumShortage: null, reconciliation: null };
+  const empty = { evaluationState: "unavailable", supplyStatus: SUPPLY_STATUS.unavailable, periodEnded: false, minute, current: null, lines: [], series: [], firstFuture: null, maximumShortage: null, reconciliation: null };
   if (!Number.isFinite(minute) || plan.model.errors.length || !plan.required.length || !plan.operational.points.length) return empty;
   const requiredByMinute = new Map(plan.required.map(p => [p.minute, p]));
   const plannedByMinute = new Map(plan.operational.points.map(p => [p.minute, p]));
@@ -64,7 +67,7 @@ function calculateSupplyView(plan, minute) {
     const p = displayedByMinute.get(r.minute);
     return p ? { minute: r.minute, planned: p.count, required: r.count, difference: p.count - r.count } : null;
   }).filter(Boolean);
-  const end = Math.max(minute, ...plan.model.jobs.map(j => j.deadline));
+  const end = plan.model.jobs.length ? Math.max(...plan.model.jobs.map(j => j.deadline)) : minute;
   const overall = supplyWindow(series, minute, end);
   const lines = plan.model.lines.map(line => {
     const jobs = plan.operational.jobs.filter(j => j.lineId === line.id);
@@ -80,12 +83,9 @@ function calculateSupplyView(plan, minute) {
     const currentPoint = plannedByMinute.get(minute);
     const complete = jobs.every(j => j.finishedAt !== null && j.finishedAt <= j.deadline);
     const finish = count && complete ? Math.max(...jobs.map(j => j.finishedAt)) : null;
-    const periodEnded = deadline !== null && minute > deadline;
-    if (periodEnded) window.maximumShortage = null;
-    const supplyStatus = !window.current ? "算出不可" : window.ongoing || window.firstInWindow !== null ? "必要供給不足" : "供給条件充足";
     const deadlineStatus = !count ? "対象なし" : complete ? "計画内完了" : "期限未達見込み";
-    return { id: line.id, name: line.name, count, deadlines, deadline, finish, ...window, periodEnded,
-      supplyStatus, deadlineStatus, riskStatus: deadlineStatus === "期限未達見込み" ? deadlineStatus : supplyStatus,
+    return { id: line.id, name: line.name, count, deadlines, deadline, finish, ...window,
+      deadlineStatus, riskStatus: deadlineStatus === "期限未達見込み" ? deadlineStatus : window.supplyStatus,
       wip: currentPoint?.wipByLine[line.id] ?? null, packed: currentPoint?.packedByLine[line.id] ?? null, estimated: true };
   });
   // Total picking includes outsourced supply, absent from internal byLine maps.
