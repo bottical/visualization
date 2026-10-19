@@ -41,11 +41,11 @@
         <p class="allocation-note">現在時刻までに対象となった作業の標準作業量比率から按分した目安です。工程別実績は未反映です。</p></details>
       </div>
       <div class="card chart-card">
-        <div class="card-title"><div><span class="tag calc">計算値</span><h3>ピッキング進捗　計画／必要供給／実績</h3></div><div class="legend"><span><i class="ideal"></i>計画進捗（採用配置）</span><span id="required-legend"><i class="required"></i>理論必要供給（梱包期限基準）</span><span><i class="actual"></i>ピッキング実績</span><span><i class="packing-marker"></i>梱包 開始リミット</span><span><i class="finish-marker"></i>現在ペースでの完了予測</span><span><i class="current-marker"></i>現在時刻</span></div></div>
+        <div class="card-title"><div><span class="tag calc">計算値</span><h3>ピッキング進捗　計画／必要供給／実績</h3></div><div class="legend"><span><i class="ideal"></i>計画進捗（採用配置）</span><span id="required-legend"><i class="required"></i>理論必要供給（梱包期限基準）</span><span><i class="actual"></i>ピッキング実績</span><span><i class="packing-marker"></i>梱包 開始リミット</span><span><i class="finish-marker"></i>ピッキング計画終了</span><span><i class="current-marker"></i>現在時刻</span></div></div>
         <div class="chart-controls"><label><input id="show-required-supply" type="checkbox" checked> 理論必要供給を表示</label><span>表示切替は計画・判定に影響しません</span></div>
         <p class="planning-note">青線は採用配置の計画、赤破線は梱包期限からの必要条件、オレンジ線は実績です。</p>
-        <canvas id="progress-chart" height="340" aria-label="採用配置の計画進捗、理論必要供給、ピッキング実績、およびバッチ追加と時刻マーカーのグラフ"></canvas>
-        <details class="graph-details"><summary>グラフの読み方</summary><p>青線は、実績があれば最終観測を起点に将来を再計算した採用配置の計画です。赤破線の10時・13時の段差は、バッチ追加による必要条件の更新を示します。瞬間的な作業完了ではありません。必要供給を満たすだけで期限内完了や減員の可否は判断できません。ライン別供給・梱包済・仕掛は推定です。</p><p>現在ペースでの完了予測マーカーは直近実績速度の外挿です。人員配置変更による速度変化を反映しません。</p></details>
+        <canvas id="progress-chart" height="340" aria-label="採用配置の計画進捗、理論必要供給、ピッキング実績、およびピッキング計画終了・バッチ追加・現在時刻・梱包開始リミットのマーカーのグラフ"></canvas>
+        <details class="graph-details"><summary>グラフの読み方</summary><p>青線は、実績があれば最終観測を起点に将来を再計算した採用配置の計画です。赤破線の10時・13時の段差は、バッチ追加による必要条件の更新を示します。瞬間的な作業完了ではありません。必要供給を満たすだけで期限内完了や減員の可否は判断できません。ライン別供給・梱包済・仕掛は推定です。</p><p>ピッキング計画終了は、採用された人員配置計画に基づくピッキング終了予定です。実際の完了時刻を保証するものではありません。人員配置・ライン別供給・仕掛・梱包済数量は計画上の推定値です。直近実績速度による「現在ペースでの完了予測」は詳細分析で確認できます。</p></details>
         <div class="event-strip" id="event-strip"></div>
       </div>
       <div class="section-heading compact"><div><p class="eyebrow">PACKING DEADLINES</p><h2>梱包ライン計画</h2></div><p class="muted">期限達成と供給リスクを分けて確認します。</p></div>
