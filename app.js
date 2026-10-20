@@ -346,7 +346,7 @@ function renderSummary() {
   document.querySelector("#event-strip").innerHTML = [[t.start,"開始"],[t.batch10,"バッチ追加"],[t.batch13,"バッチ追加"],[t.alert,"警戒ライン"]].map(x=>`<span class="event"><strong>${x[0]}</strong> ${x[1]}</span>`).join("");
   const packing = calculatePlannedPackingRows();
   renderPackingTable("#packing-summary-body",false);
-  renderChart(m.ideal,m.actual,{currentMinute:isFiniteNumber(m.currentMinute)?m.currentMinute:timeToMinutes(state.dailyInput.currentTime),finishMinute:m.finish,packing,required:getPackingPlan().required,batchMinutes:[timeToMinutes(t.batch10),timeToMinutes(t.batch13)]});
+  renderChart(m.ideal,m.actual,{currentMinute:isFiniteNumber(m.currentMinute)?m.currentMinute:timeToMinutes(state.dailyInput.currentTime),finishMinute:m.plannedFinish.minute,packing,required:getPackingPlan().required,batchMinutes:[timeToMinutes(t.batch10),timeToMinutes(t.batch13)]});
 }
 function renderPickTable() {
   const totals = getPickTotals();
@@ -509,7 +509,7 @@ function renderValidationMessages() {
 function truncateAtFirstMissing(points) { const missing = points.findIndex(point => point.count === null); return points.slice(0, missing < 0 ? points.length : missing); }
 function getChartMarkers({ currentMinute, finishMinute, packing = [], batchMinutes = [] } = {}) {
   const markers = packing.filter(line => line.count > 0 && isFiniteNumber(line.latestStartMinutes)).map(line => ({ type: "packing", minute: line.latestStartMinutes, label: `${line.name} 開始リミット ${minutesToDeadlineTime(line.latestStartMinutes)}`, isPast: isFiniteNumber(currentMinute) && line.latestStartMinutes <= currentMinute }));
-  if (isFiniteNumber(finishMinute)) markers.push({ type: "finish", minute: finishMinute, label: `現在ペースでの完了予測 ${minutesToTime(finishMinute)}` });
+  if (isFiniteNumber(finishMinute)) markers.push({ type: "finish", minute: finishMinute, label: `ピッキング計画終了 ${minutesToTime(finishMinute)}` });
   if (isFiniteNumber(currentMinute)) markers.push({ type: "current", minute: currentMinute, label: `現在 ${minutesToTime(currentMinute)}` });
   for (const minute of batchMinutes.filter(isFiniteNumber)) markers.push({ type: "batch", minute, label: `${minutesToTime(minute)} バッチ追加（必要条件更新）` });
   return markers;

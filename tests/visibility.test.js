@@ -208,3 +208,34 @@ test('expired actions distinguish unfinished work from model completion without 
  const c=context();assert.equal(c.packingAction({evaluationState:'shortage',deadlineStatus:'期限未達見込み'}),'配置見直し');
  assert.equal(c.packingAction({evaluationState:'period-ended',deadlineStatus:'期限未達見込み'}),'実績確認・未処理対応');assert.equal(c.packingAction({evaluationState:'period-ended',deadlineStatus:'計画内完了'}),'実績確認');
 });
+
+
+test('summary passes the same planned completion to KPI and marker through clock, input and observation changes',()=>{
+ const c=context(),elements={};c.document.querySelector=q=>elements[q]||={};vm.runInContext('state=initialPresetState();renderChart=(ideal,actual,data)=>{globalThis.chartData=data}',c);
+ function check(){
+  const before=JSON.stringify(vm.runInContext('({state,plan:getPackingPlan()})',c));c.renderSummary();const m=c.currentMetrics(),data=c.chartData;
+  assert.equal(data.finishMinute,m.plannedFinish.minute);const marker=c.getChartMarkers(data).find(p=>p.type==='finish');
+  if(m.plannedFinish.minute===null){assert.equal(marker,undefined);assert.match(elements['#kpi-grid'].innerHTML,m.plannedFinish.state==='no-demand'?/対象なし/:/算出不可/);}
+  else {assert.equal(marker.minute,m.plannedFinish.minute);assert.equal(marker.label,'ピッキング計画終了 '+c.minutesToTime(m.plannedFinish.minute));assert.ok(elements['#kpi-grid'].innerHTML.includes(c.minutesToTime(marker.minute)));}
+  assert.match(elements['#analysis-kpi-grid'].innerHTML,/現在ペースでの完了予測/);assert.equal(JSON.stringify(vm.runInContext('({state,plan:getPackingPlan()})',c)),before);
+  return m;
+ }
+ assert.equal(check().finish,null,'no observations still shows adopted completion');
+ for(const clock of ['09:50','10:00','12:50','13:00','13:40']){c.clock=clock;vm.runInContext('state.dailyInput.currentTime=clock',c);check();}
+ vm.runInContext("state.dailyInput.picks.total.batch13='400'",c);check();
+ vm.runInContext("state.actuals=[{time:'13:10',totalCompleted:8100},{time:'13:40',totalCompleted:9000}]",c);const observed=check();assert.notEqual(observed.finish,observed.plannedFinish.minute);
+ vm.runInContext('state.actuals[1].totalCompleted=9100',c);check();
+ vm.runInContext('state.actuals.pop()',c);assert.equal(check().current.minute,790);
+ vm.runInContext("state.actuals[0].time='13:00'",c);assert.equal(check().current.minute,780);
+ vm.runInContext('state.actuals=[]',c);check();
+ vm.runInContext("for(const row of Object.values(state.dailyInput.picks))for(const field of ['batch6','batch10','batch13'])row[field]='0'",c);assert.equal(check().plannedFinish.state,'no-demand');
+ vm.runInContext("state=initialPresetState();state.dailyInput.picks.total.batch13='1000000'",c);assert.equal(check().plannedFinish.state,'unfinished');
+ vm.runInContext("state=initialPresetState();state.dailyInput.bufferMinutes=''",c);assert.equal(check().plannedFinish.state,'unavailable');
+});
+test('planned finish marker extends the axis only as needed and null adds no marker',()=>{
+ const c=context(),base={startMinute:570,alertMinute:840,currentMinute:820,latestActualMinute:820};
+ const normal=c.getChartTimeRange({...base,finishMinute:900});assert.equal(normal.end,915);
+ assert.equal(c.getChartTimeRange({...base,finishMinute:1100}).end,1115);assert.equal(c.getChartTimeRange({...base,finishMinute:null}).end,855);
+ assert.equal(c.getChartMarkers({finishMinute:null}).filter(p=>p.type==='finish').length,0);
+ assert.equal(c.getChartMarkers({finishMinute:1100}).find(p=>p.type==='finish').label,'ピッキング計画終了 18:20');
+});
