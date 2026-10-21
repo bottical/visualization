@@ -158,7 +158,7 @@ const chosen = getPackingPlan();
 const baselinePoint = chosen.initialPlan.points.find(p => p.minute === metrics.current.minute);
 assertNear(metrics.idealPoint.count, baselinePoint.count, 0.0001, "当初計画を差分比較に使用");
 assertNear(metrics.current.count, 9800, 0, "実績累計");
-assertNear(metrics.diffCount, 9800 - baselinePoint.count, 0.0001, "当初計画との差");
+assertNear(metrics.diffCount, 9800 - baselinePoint.count, 0.0001, "当初ピック計画との差");
 assertNear(chosen.displayed.find(p => p.minute === metrics.current.minute).count, 9800, 0.0001, "実績反映線の起点");
 const nextTarget = chosen.displayed.find(p => p.minute === metrics.current.minute + 1);
 assertNear(metrics.replanSpeed, (nextTarget.count - 9800) * 60, 0.0001, "再計画速度は独立指標");
@@ -195,7 +195,7 @@ if (activeLineRange.end <= timeToMinutes("16:00")) throw new Error("有効ライ
 const markerPacking = [...packing, { name: "時刻なし対象外", count: 1, latestStartMinutes: null }, { name: "0件対象外", count: 0, latestStartMinutes: timeToMinutes("15:30") }];
 const chartMarkers = getChartMarkers({ currentMinute: timeToMinutes("13:40"), finishMinute: metrics.plannedFinish.minute, packing: markerPacking });
 if (chartMarkers.filter(marker => marker.type === "packing").length !== 5 || chartMarkers.some(marker => marker.label.includes("対象外"))) throw new Error("0件またはnull最新開始を描画対象から除外");
-if (!chartMarkers.some(marker => marker.label === "ピッキング計画終了 " + minutesToTime(metrics.plannedFinish.minute)) || !chartMarkers.some(marker => marker.label === "現在 13:40")) throw new Error("チャートイベント文言");
+if (!chartMarkers.some(marker => marker.label === "ピッキング終了予定 " + minutesToTime(metrics.plannedFinish.minute)) || !chartMarkers.some(marker => marker.label === "計画の基準時刻 13:40")) throw new Error("チャートイベント文言");
 if (!chartMarkers.find(marker => marker.label.startsWith("レオ ")).isPast || chartMarkers.find(marker => marker.label.startsWith("手梱包 ")).isPast) throw new Error("梱包開始期限の過去未来判定");
 const noop = () => {};
 const fakeContext = new Proxy({ measureText: text => ({ width: text.length * 6 }) }, { get: (target, key) => key in target ? target[key] : noop, set: (target, key, value) => { target[key] = value; return true; } });
@@ -215,21 +215,21 @@ const crowdedMarkers = Array.from({ length: 7 }, (_, index) => ({ type: "packing
 const crowdedLayout = calculateMarkerLabelLayout(fakeContext, crowdedMarkers, () => 200, 62, 357);
 assertNoLabelOverlap(crowdedLayout, "5レーンを超える密集配置の衝突");
 if (Math.max(...crowdedLayout.map(item => item.lane)) !== crowdedMarkers.length - 1) throw new Error("必要数までレーンを動的追加");
-const mixedMarkers = [{ type: "packing", label: "手梱包 14:21" }, { type: "finish", label: "ピッキング計画終了 14:33" }, { type: "current", label: "現在 13:40" }];
-const mixedLayout = layoutMarkers(mixedMarkers, 900, { "手梱包 14:21": 420, "ピッキング計画終了 14:33": 430, "現在 13:40": 410 });
+const mixedMarkers = [{ type: "packing", label: "手梱包 14:21" }, { type: "finish", label: "ピッキング終了予定 14:33" }, { type: "current", label: "計画の基準時刻 13:40" }];
+const mixedLayout = layoutMarkers(mixedMarkers, 900, { "手梱包 14:21": 420, "ピッキング終了予定 14:33": 430, "計画の基準時刻 13:40": 410 });
 assertNoLabelOverlap(mixedLayout, "マーカー種別間の衝突");
 if (mixedLayout.find(item => item.marker.type === "current").lane !== 0 || mixedLayout.find(item => item.marker.type === "finish").lane !== 1) throw new Error("マーカー表示優先度");
 const edgeMarkers = [{ type: "packing", label: "右端の長いラベル" }, { type: "packing", label: "内側ラベル" }];
 const edgeLayout = layoutMarkers(edgeMarkers, 600, { "右端の長いラベル": 575, "内側ラベル": 500 });
 if (edgeLayout.find(item => item.marker.label === "右端の長いラベル").labelX >= 575 || edgeLayout[0].lane === edgeLayout[1].lane) throw new Error("右端反転後の矩形による衝突判定");
 const demoMarkers = [
-  { type: "packing", label: "レオ 開始リミット 10:16", minute: 616 },
-  { type: "packing", label: "ジェミニ 開始リミット 11:02", minute: 662 },
-  { type: "packing", label: "ラディッシュ 開始リミット 13:05", minute: 785 },
-  { type: "current", label: "現在 13:40", minute: 820 },
-  { type: "packing", label: "手梱包 開始リミット 14:21", minute: 861 },
-  { type: "finish", label: "ピッキング計画終了 14:33", minute: 873 },
-  { type: "packing", label: "ラビオリ 開始リミット 15:21", minute: 921 }
+  { type: "packing", label: "レオ 梱包開始の最終目安 10:16", minute: 616 },
+  { type: "packing", label: "ジェミニ 梱包開始の最終目安 11:02", minute: 662 },
+  { type: "packing", label: "ラディッシュ 梱包開始の最終目安 13:05", minute: 785 },
+  { type: "current", label: "計画の基準時刻 13:40", minute: 820 },
+  { type: "packing", label: "手梱包開始の最終目安 14:21", minute: 861 },
+  { type: "finish", label: "ピッキング終了予定 14:33", minute: 873 },
+  { type: "packing", label: "ラビオリ 梱包開始の最終目安 15:21", minute: 921 }
 ];
 for (const width of [900, 600, 375]) {
   const x = marker => 62 + (marker.minute - 570) / (936 - 570) * (width - 80);
@@ -263,12 +263,12 @@ state.dailyInput.currentTime = "12:50";
 const before13 = calculatePickingStaffAllocation(22);
 state.dailyInput.currentTime = "13:10";
 const after13 = calculatePickingStaffAllocation(22);
-if (!(after10.rows[0].releasedCount > before10.rows[0].releasedCount && after10.rows[0].workHours > before10.rows[0].workHours)) throw new Error("10時バッチの目安配分反映");
-if (!(after13.rows[0].releasedCount > before13.rows[0].releasedCount && after13.rows[0].workHours > before13.rows[0].workHours)) throw new Error("13時バッチの目安配分反映");
+if (!(after10.rows[0].releasedCount > before10.rows[0].releasedCount && after10.rows[0].workHours > before10.rows[0].workHours)) throw new Error("10時バッチの作業追加時刻の目安配分反映");
+if (!(after13.rows[0].releasedCount > before13.rows[0].releasedCount && after13.rows[0].workHours > before13.rows[0].workHours)) throw new Error("13時バッチの作業追加時刻の目安配分反映");
 state.dailyInput.currentTime = excelFixture.currentTime;
 state.dailyInput.currentTime = "13:05";
 const radishStartSummary = calculateCurrentStaffingSummary();
-if (packingStatus(packing[3]) !== "開始期限到来" || radishStartSummary.packingPeople + radishStartSummary.pickingPeople > radishStartSummary.totalPeople) throw new Error("開始リミット表示と配置人数の保存則");
+if (packingStatus(packing[3]) !== "開始期限到来" || radishStartSummary.packingPeople + radishStartSummary.pickingPeople > radishStartSummary.totalPeople) throw new Error("梱包開始の最終目安表示と配置人数の保存則");
 state.dailyInput.currentTime = "14:21";
 const manualStartSummary = calculateCurrentStaffingSummary();
 if (manualStartSummary.packingPeople + manualStartSummary.pickingPeople > manualStartSummary.totalPeople) throw new Error("手梱包調整後の人員保存則");
@@ -300,4 +300,4 @@ console.log(JSON.stringify({ ideal: metrics.idealPoint.count, actual: metrics.cu
 `, context);
 
 const html = fs.readFileSync("index.html", "utf8");
-if (!html.includes("詳細シミュレーション条件（任意）") || /<details class="card planning-settings"[^>]*\bopen\b/.test(html)) throw new Error("詳細条件は任意・初期折りたたみ");
+if (!html.includes("人員・梱包ラインの詳細条件（任意）") || /<details class="card planning-settings"[^>]*\bopen\b/.test(html)) throw new Error("詳細条件は任意・初期折りたたみ");

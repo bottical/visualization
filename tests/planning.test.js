@@ -207,14 +207,14 @@ test("summary shows estimated replan, stale observation, bounded search and move
  const original=context.document.querySelector,elements={};context.document.querySelector=s=>elements[s]||={};
  try{context.inputForTest=fixture(1000);context.inputForTest.actuals=[{time:"13:00",totalCompleted:100}];vm.runInContext("state=inputForTest;renderPlanSummary();renderStaffingSummary();renderPackingDetail()",context);
  assert.match(elements['#plan-summary'].innerHTML,/実績反映の概算再計画/);assert.match(elements['#plan-summary'].innerHTML,/現在との差 40分/);assert.match(elements['#plan-summary'].innerHTML,/推定です/);
- assert.match(elements['#staffing-summary'].innerHTML,/計画上の梱包配置人数/);
+ assert.match(elements['#staffing-summary'].innerHTML,/梱包への計画配置人数/);
  const summary=context.calculateCurrentStaffingSummary();if(summary.nextMovement){const ps=context.getPackingPlan().operational.points;const t=summary.nextMovement.minute;assert.ok(ps.find(p=>p.minute===t).packingPeople>=0);}
  assert.match(elements['#packing-notice'].textContent,/梱包済・仕掛・残梱包は推定/);
  }finally{context.document.querySelector=original;}
 });
 test("finish rendering differentiates unavailable, deadline miss, estimated success and no demand",()=>{
  const original=context.document.querySelector,elements={};context.document.querySelector=s=>elements[s]||={};
- try{for(const [input,expected]of[[fixture(),/計画上の梱包完了見込み：\d{2}:\d{2}/],[fixture(0),/計画上の梱包完了見込み：対象なし/]]){context.inputForTest=input;vm.runInContext("state=inputForTest;renderPlanSummary()",context);assert.match(elements['#plan-summary'].innerHTML,expected);}
+ try{for(const [input,expected]of[[fixture(),/梱包終了予定：\d{2}:\d{2}/],[fixture(0),/梱包終了予定：対象なし/]]){context.inputForTest=input;vm.runInContext("state=inputForTest;renderPlanSummary()",context);assert.match(elements['#plan-summary'].innerHTML,expected);}
  const input=fixture();input.dailyInput.bufferMinutes="";context.inputForTest=input;vm.runInContext("state=inputForTest;renderPlanSummary()",context);assert.match(elements['#plan-summary'].innerHTML,/算出不可/);
  }finally{context.document.querySelector=original;}
 });
