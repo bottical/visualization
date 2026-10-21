@@ -121,7 +121,7 @@ test('summary and detail use the same expired states and detail displays the sta
  const elements={};c.document.querySelector=s=>elements[s]||={};vm.runInContext("state=initialPresetState();state.dailyInput.currentTime='00:09';getSupplyView=()=>fakeView;calculatePlannedPackingRows=()=>rows;renderPackingTable('#summary',false);renderPackingTable('#detail',true);renderSupplyMetrics()",c);
  for(const selector of ['#summary','#detail']){const html=elements[selector].innerHTML;assert.equal((html.match(/>評価期間終了<\/span>/g)||[]).length,2);assert.match(html,/status bad">期限未達見込み/);assert.match(html,/status good">期限内完了見込み/);assert.doesNotMatch(html,/status good">評価期間終了/);assert.doesNotMatch(html,/供給条件充足|最大不足 0件|新規不足なし/);}
  assert.match(elements['#detail'].innerHTML,/00:03以降／最大30(?:\.0)?件（過去）/);
- assert.equal((elements['#summary'].innerHTML.match(/開始リミット /g)||[]).length,0);assert.doesNotMatch(elements['#detail'].innerHTML,/開始リミット /);assert.equal((elements['#detail'].innerHTML.match(/<td>00:05<\/td>/g)||[]).length,2);
+ assert.equal((elements['#summary'].innerHTML.match(/梱包開始の最終目安 /g)||[]).length,0);assert.doesNotMatch(elements['#detail'].innerHTML,/梱包開始の最終目安 /);assert.equal((elements['#detail'].innerHTML.match(/<td>00:05<\/td>/g)||[]).length,2);
  assert.match(elements['#supply-metrics'].innerHTML,/最大不足 評価期間終了/);assert.doesNotMatch(elements['#supply-metrics'].innerHTML,/最大不足 0件|新規不足なし/);
 });
 
@@ -158,15 +158,15 @@ test('summary has four primary KPIs, derived completion and independently folded
  const c=context(),elements={};c.document.querySelector=q=>elements[q]||={};
  vm.runInContext('state=initialPresetState();renderChart=()=>{};renderSummary()',c);
  const html=elements['#kpi-grid'].innerHTML;assert.equal((html.match(/class="kpi /g)||[]).length,4);
- for(const label of ['ピッキング完了件数','計画との差','作業ペース','計画上のピッキング完了'])assert.ok(html.includes(label));
- assert.match(html,/実績未入力/);assert.doesNotMatch(html,/現在ペースでの完了予測/);
- assert.match(elements['#analysis-kpi-grid'].innerHTML,/比較用計画累計|現在ペースでの完了予測/);
- assert.match(elements['#plan-summary'].innerHTML,/出荷期限の達成見込み/);assert.match(elements['#plan-summary'].innerHTML,/期限内完了可能（概算）/);
+ for(const label of ['ピック完了数（実績）','ピック計画との差','ピック速度（計画比）','ピッキング終了予定'])assert.ok(html.includes(label));
+ assert.match(html,/実績未入力/);assert.doesNotMatch(html,/現在の速度が続く場合の終了予測/);
+ assert.match(elements['#analysis-kpi-grid'].innerHTML,/ピック計画数（実績反映前）|現在の速度が続く場合の終了予測/);
+ assert.match(elements['#plan-summary'].innerHTML,/出荷は間に合う見込みか/);assert.match(elements['#plan-summary'].innerHTML,/期限内完了可能（概算）/);
  assert.equal((elements['#packing-summary-body'].innerHTML.match(/<td[ >]/g)||[]).length,25);
- assert.doesNotMatch(elements['#packing-summary-body'].innerHTML,/開始リミット|最大不足|残梱包/);
+ assert.doesNotMatch(elements['#packing-summary-body'].innerHTML,/梱包開始の最終目安|最大不足|残梱包/);
  vm.runInContext("state.actuals=[{time:'13:00',totalCompleted:8000},{time:'13:40',totalCompleted:9000}];renderSummary()",c);
  const m=c.currentMetrics();assert.notEqual(m.plannedFinish.minute,m.finish);
- assert.match(elements['#progress-trend'].innerHTML,/進捗の傾向/);
+ assert.match(elements['#progress-trend'].innerHTML,/ピック進捗の状態/);
 });
 test('shipment labels preserve core feasibility types and general actions do not invent crew instructions',()=>{
  const c=context();for(const [scenario,status,title]of[['feasible','unknown','期限内完了可能（概算）'],['infeasible','unknown','期限内完了困難（概算）'],['feasible','feasible','計画成立（条件確認済み）'],['infeasible','infeasible','計画不成立（条件確認済み）'],['unknown','unknown','算出不可']]){
@@ -216,8 +216,8 @@ test('summary passes the same planned completion to KPI and marker through clock
   const before=JSON.stringify(vm.runInContext('({state,plan:getPackingPlan()})',c));c.renderSummary();const m=c.currentMetrics(),data=c.chartData;
   assert.equal(data.finishMinute,m.plannedFinish.minute);const marker=c.getChartMarkers(data).find(p=>p.type==='finish');
   if(m.plannedFinish.minute===null){assert.equal(marker,undefined);assert.match(elements['#kpi-grid'].innerHTML,m.plannedFinish.state==='no-demand'?/対象なし/:/算出不可/);}
-  else {assert.equal(marker.minute,m.plannedFinish.minute);assert.equal(marker.label,'ピッキング計画終了 '+c.minutesToTime(m.plannedFinish.minute));assert.ok(elements['#kpi-grid'].innerHTML.includes(c.minutesToTime(marker.minute)));}
-  assert.match(elements['#analysis-kpi-grid'].innerHTML,/現在ペースでの完了予測/);assert.equal(JSON.stringify(vm.runInContext('({state,plan:getPackingPlan()})',c)),before);
+  else {assert.equal(marker.minute,m.plannedFinish.minute);assert.equal(marker.label,'ピッキング終了予定 '+c.minutesToTime(m.plannedFinish.minute));assert.ok(elements['#kpi-grid'].innerHTML.includes(c.minutesToTime(marker.minute)));}
+  assert.match(elements['#analysis-kpi-grid'].innerHTML,/現在の速度が続く場合の終了予測/);assert.equal(JSON.stringify(vm.runInContext('({state,plan:getPackingPlan()})',c)),before);
   return m;
  }
  assert.equal(check().finish,null,'no observations still shows adopted completion');
@@ -237,5 +237,5 @@ test('planned finish marker extends the axis only as needed and null adds no mar
  const normal=c.getChartTimeRange({...base,finishMinute:900});assert.equal(normal.end,915);
  assert.equal(c.getChartTimeRange({...base,finishMinute:1100}).end,1115);assert.equal(c.getChartTimeRange({...base,finishMinute:null}).end,855);
  assert.equal(c.getChartMarkers({finishMinute:null}).filter(p=>p.type==='finish').length,0);
- assert.equal(c.getChartMarkers({finishMinute:1100}).find(p=>p.type==='finish').label,'ピッキング計画終了 18:20');
+ assert.equal(c.getChartMarkers({finishMinute:1100}).find(p=>p.type==='finish').label,'ピッキング終了予定 18:20');
 });

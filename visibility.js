@@ -131,7 +131,7 @@ function recentComparison(actuals, reference, windowMinutes) {
     referenceSpeed:referenceIncrement===null?null:referenceIncrement/elapsed*60,
     ratio:referenceIncrement>0?actualIncrement/referenceIncrement*100:null};
 }
-const TREND_LABELS=Object.freeze({ahead:"計画より先行",above:"計画以上（速度判定不可）","steady-unrated":"計画どおり（速度判定不可）",steady:"計画どおり",recovering:"計画より遅れ・回復傾向",slowing:"計画より遅れ・ペース低下",behind:"計画より遅れ（速度判定不可）",complete:"ピッキング完了",unavailable:"算出不可"});
+const TREND_LABELS=Object.freeze({ahead:"計画より先行",above:"計画以上（速度判定不可）","steady-unrated":"計画どおり（速度判定不可）",steady:"計画どおり",recovering:"遅れあり・挽回中",slowing:"遅れあり・計画より低速",behind:"遅れあり（速度判定不可）",complete:"ピッキング完了",unavailable:"算出不可"});
 function progressTrend({actualCount,referenceCount,totalCount,comparison,delay,tolerance}) {
   if (![actualCount,referenceCount,tolerance].every(Number.isFinite)) return "unavailable";
   if (Number.isFinite(totalCount) && actualCount>=totalCount) return "complete";
