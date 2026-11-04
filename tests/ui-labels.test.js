@@ -26,13 +26,16 @@ test('all tabs use business labels and settings preserve the existing paths and 
  const before=vm.runInContext('JSON.stringify(state)',c);c.renderSettings();c.renderChart=()=>{};c.renderSummary();c.renderPackingDetail();c.renderPickTable();
  assert.equal(vm.runInContext('JSON.stringify(state)',c),before);
  const daily=elements['#daily-fields'].innerHTML,time=elements['#time-fields'].innerHTML,detail=elements['#plan-settings'].innerHTML;
- for(const word of ['計画の基準時刻','社外で梱包する件数','出荷締切前の作業完了余裕（分）','手梱包の配置可能人数','配置可能総人数の内数','ピッキング・梱包に使える総人数'])assert.ok(daily.includes(word),word);
+ for(const word of ['計画の基準時刻','社外で梱包する件数','出荷締切前の作業完了余裕（分）','手梱包の配置可能人数','総人数の内数（最大30人）','ピッキング・梱包に使える総人数'])assert.ok(daily.includes(word),word);
  for(const path of ['currentTime','outsourced','bufferMinutes','manualPeople','staffing.before10','staffing.before13','staffing.after13'])assert.ok(daily.includes('data-path="dailyInput.'+path+'"'));
- assert.doesNotMatch(time,/primaryGoal|13時前主要作業目標/);assert.match(time,/settings.times.batch10/);assert.match(time,/参考設定/);assert.match(time,/作業ペースの比較時間/);
- for(const word of ['他業務に確保する人数','時間帯別の手梱包人数','開始時点のピック済み・未梱包件数','10時バッチの梱包対象確定数','13時バッチの手梱包ゆうパケット件数','未指定のため計算上0件と仮定','新たな注文として加算しません'])assert.ok(detail.includes(word),word);
- for(const word of ['ピック完了数（実績）','ピック計画との差','ピック速度（計画比）','ピッキング終了予定'])assert.ok(elements['#kpi-grid'].innerHTML.includes(word));
- assert.match(elements['#analysis-kpi-grid'].innerHTML,/現在の速度が続く場合の終了予測/);assert.match(elements['#plan-summary'].innerHTML,/出荷は間に合う見込みか/);
+ assert.doesNotMatch(time,/primaryGoal|13時前主要作業目標/);assert.match(time,/settings.times.batch10/);assert.match(time,/進捗確認用。出荷締切ではありません/);assert.match(time,/作業ペースの比較時間/);
+ for(const word of ['他業務に確保する人数','時間帯別の手梱包人数','開始時点のピック済み・未梱包件数','10時バッチの梱包対象確定数','13時バッチの手梱包ゆうパケット件数','未指定のため計算上0件と仮定','開始時の仕掛は6時バッチに含みます'])assert.ok(detail.includes(word),word);
+ for(const word of ['ピック完了数（実績）','比較用計画との差','ピック速度（計画比）','ピッキング終了予定'])assert.ok(elements['#kpi-grid'].innerHTML.includes(word));
+ assert.match(elements['#analysis-kpi-grid'].innerHTML,/直近ペースでの終了見込み（参考）/);assert.match(elements['#plan-summary'].innerHTML,/出荷は間に合う見込みか/);
  assert.match(elements['#master-table-body'].innerHTML,/件／人・時/);assert.match(elements['#master-table-body'].innerHTML,/件／時/);
+ vm.runInContext("state.dailyInput.currentTime='13:40';state.actuals=[{time:'13:10',totalCompleted:8100}];renderSummary()",c);
+ assert.match(elements['#kpi-grid'].innerHTML,/13:10時点｜実績 − 比較用計画（実績未反映）/);
+ assert.doesNotMatch(elements['#kpi-grid'].innerHTML,/13:40時点｜実績 − 比較用計画/);
 });
 test('blank and explicit zero details remain distinct through render and legacy storage reload',()=>{
  const {c}=setup();vm.runInContext("state=initialPresetState();state.dailyInput.packingPlan.manualPeople.before10='0';state.dailyInput.packingPlan.lines.gemini.initialWip='0';state.dailyInput.packingPlan.lines.leo.confirmed.batch6='0';saveState();state=loadState();renderSettings()",c);

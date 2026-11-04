@@ -84,7 +84,7 @@ test("physical equipment deficit is distinguished from a search that found no st
   const p=calculate(physical);assert.equal(p.evaluation.failureKind,"physical");assert.equal(p.evaluation.scenarioStatus,"infeasible");
   const staffing=fixture();routeOnly(staffing,"leo");staffing.dailyInput.staffing={before10:"5",before13:"5",after13:"5"};
   const s=checked(staffing);assert.equal(s.evaluation.failureKind,"search-exhausted");assert.ok(s.evaluation.reasons.some(r=>r.startsWith("人員不足")));
-  assert.match(context.getPlanPresentation(s.evaluation).description,/発見できません/);
+  assert.match(context.getPlanPresentation(s.evaluation).description,/配置案が見つかりませんでした/);
 });
 test("aggregate supply cannot establish individual line readiness",()=>{
  const input=fixture();routeOnly(input,"manual");input.dailyInput.packingPlan.lines.gemini.confirmed.batch6="100";input.dailyInput.packingPlan.lines.manual.confirmed.batch6="500";
@@ -206,10 +206,10 @@ test("actual changes invalidate the application plan cache",()=>{
 test("summary shows estimated replan, stale observation, bounded search and moves from the chosen schedule",()=>{
  const original=context.document.querySelector,elements={};context.document.querySelector=s=>elements[s]||={};
  try{context.inputForTest=fixture(1000);context.inputForTest.actuals=[{time:"13:00",totalCompleted:100}];vm.runInContext("state=inputForTest;renderPlanSummary();renderStaffingSummary();renderPackingDetail()",context);
- assert.match(elements['#plan-summary'].innerHTML,/実績反映の概算再計画/);assert.match(elements['#plan-summary'].innerHTML,/現在との差 40分/);assert.match(elements['#plan-summary'].innerHTML,/推定です/);
+ assert.match(elements['#plan-summary'].innerHTML,/実績反映：/);assert.match(elements['#plan-summary'].innerHTML,/データ経過40分/);assert.match(elements['#plan-summary'].innerHTML,/梱包・仕掛は推定/);
  assert.match(elements['#staffing-summary'].innerHTML,/梱包への計画配置人数/);
  const summary=context.calculateCurrentStaffingSummary();if(summary.nextMovement){const ps=context.getPackingPlan().operational.points;const t=summary.nextMovement.minute;assert.ok(ps.find(p=>p.minute===t).packingPeople>=0);}
- assert.match(elements['#packing-notice'].textContent,/梱包済・仕掛・残梱包は推定/);
+ assert.match(elements['#packing-notice'].textContent,/梱包終了・仕掛は推定値/);
  }finally{context.document.querySelector=original;}
 });
 test("finish rendering differentiates unavailable, deadline miss, estimated success and no demand",()=>{

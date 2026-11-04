@@ -158,9 +158,9 @@ test('summary has four primary KPIs, derived completion and independently folded
  const c=context(),elements={};c.document.querySelector=q=>elements[q]||={};
  vm.runInContext('state=initialPresetState();renderChart=()=>{};renderSummary()',c);
  const html=elements['#kpi-grid'].innerHTML;assert.equal((html.match(/class="kpi /g)||[]).length,4);
- for(const label of ['ピック完了数（実績）','ピック計画との差','ピック速度（計画比）','ピッキング終了予定'])assert.ok(html.includes(label));
- assert.match(html,/実績未入力/);assert.doesNotMatch(html,/現在の速度が続く場合の終了予測/);
- assert.match(elements['#analysis-kpi-grid'].innerHTML,/ピック計画数（実績反映前）|現在の速度が続く場合の終了予測/);
+ for(const label of ['ピック完了数（実績）','比較用計画との差','ピック速度（計画比）','ピッキング終了予定'])assert.ok(html.includes(label));
+ assert.match(html,/実績未入力/);assert.doesNotMatch(html,/直近ペースでの終了見込み（参考）/);
+ assert.match(elements['#analysis-kpi-grid'].innerHTML,/比較用ピック計画数（実績未反映）|直近ペースでの終了見込み（参考）/);
  assert.match(elements['#plan-summary'].innerHTML,/出荷は間に合う見込みか/);assert.match(elements['#plan-summary'].innerHTML,/期限内完了可能（概算）/);
  assert.equal((elements['#packing-summary-body'].innerHTML.match(/<td[ >]/g)||[]).length,25);
  assert.doesNotMatch(elements['#packing-summary-body'].innerHTML,/梱包開始の最終目安|最大不足|残梱包/);
@@ -217,7 +217,7 @@ test('summary passes the same planned completion to KPI and marker through clock
   assert.equal(data.finishMinute,m.plannedFinish.minute);const marker=c.getChartMarkers(data).find(p=>p.type==='finish');
   if(m.plannedFinish.minute===null){assert.equal(marker,undefined);assert.match(elements['#kpi-grid'].innerHTML,m.plannedFinish.state==='no-demand'?/対象なし/:/算出不可/);}
   else {assert.equal(marker.minute,m.plannedFinish.minute);assert.equal(marker.label,'ピッキング終了予定 '+c.minutesToTime(m.plannedFinish.minute));assert.ok(elements['#kpi-grid'].innerHTML.includes(c.minutesToTime(marker.minute)));}
-  assert.match(elements['#analysis-kpi-grid'].innerHTML,/現在の速度が続く場合の終了予測/);assert.equal(JSON.stringify(vm.runInContext('({state,plan:getPackingPlan()})',c)),before);
+  assert.match(elements['#analysis-kpi-grid'].innerHTML,/直近ペースでの終了見込み（参考）/);assert.equal(JSON.stringify(vm.runInContext('({state,plan:getPackingPlan()})',c)),before);
   return m;
  }
  assert.equal(check().finish,null,'no observations still shows adopted completion');
