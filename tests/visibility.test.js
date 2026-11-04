@@ -158,7 +158,7 @@ test('summary has four primary KPIs, derived completion and independently folded
  const c=context(),elements={};c.document.querySelector=q=>elements[q]||={};
  vm.runInContext('state=initialPresetState();renderChart=()=>{};renderSummary()',c);
  const html=elements['#kpi-grid'].innerHTML;assert.equal((html.match(/class="kpi /g)||[]).length,4);
- for(const label of ['ピック完了数（実績）','ピック計画との差','ピック速度（計画比）','ピッキング終了予定'])assert.ok(html.includes(label));
+ for(const label of ['ピック完了数（実績）','比較用計画との差','ピック速度（計画比）','ピッキング終了予定'])assert.ok(html.includes(label));
  assert.match(html,/実績未入力/);assert.doesNotMatch(html,/直近ペースでの終了見込み（参考）/);
  assert.match(elements['#analysis-kpi-grid'].innerHTML,/比較用ピック計画数（実績未反映）|直近ペースでの終了見込み（参考）/);
  assert.match(elements['#plan-summary'].innerHTML,/出荷は間に合う見込みか/);assert.match(elements['#plan-summary'].innerHTML,/期限内完了可能（概算）/);
