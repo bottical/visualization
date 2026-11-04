@@ -35,23 +35,23 @@
       <div class="card staffing-card">
         <div class="card-title"><div><span class="tag calc">計算値</span><h3>人員配置計画</h3></div></div>
         <div id="staffing-summary" class="staffing-summary"></div>
-        <p class="staffing-note">表示される配置人数はシミュレーション上の計画値であり、現場の実配置人数ではありません。次の配置変更は実行済みの指示ではなく計画上の候補です。梱包終了後は要員を解放し、残ピックがあれば再配分します。未処理作業がなければ稼働人数へ加算しません。実配置人数ではありません。</p>
-        <details class="allocation-details"><summary>ピッキング内の人数配分目安</summary><div class="allocation-heading"><div><h4>ピッキング内の人数配分目安</h4><span>必要作業量比による目安</span></div></div>
+        <p class="staffing-note">配置人数・変更予定は試算値です。実配置や作業指示ではありません。</p>
+        <details class="allocation-details"><summary>ピッキング内の人数配分目安</summary><div class="allocation-heading"><div><h4>ピッキング内の人数配分目安</h4></div></div>
         <div id="picking-staff-allocation" aria-live="polite"></div>
-        <p class="allocation-note">計画の基準時刻までに対象となった作業の必要作業量比率から按分した目安です。工程別実績は未反映です。</p></details>
+        <p class="allocation-note">到来済みの作業量比で按分した目安人数です。</p></details>
       </div>
       <div class="card chart-card">
-        <div class="card-title"><div><span class="tag calc">計算値</span><h3>ピッキング進捗</h3></div><div class="legend"><span><i class="ideal"></i>ピック計画</span><span id="required-legend"><i class="required"></i>期限内完了に必要なピック数</span><span><i class="actual"></i>ピック実績</span><span><i class="packing-marker"></i>梱包開始の最終目安</span><span><i class="finish-marker"></i>ピッキング終了予定</span><span><i class="current-marker"></i>計画の基準時刻</span></div></div>
-        <div class="chart-controls"><label><input id="show-required-supply" type="checkbox" checked> 必要ピック数を表示</label><span>表示切替は計画・判定に影響しません</span></div>
-        <p class="planning-note">青線は人員配置計画に基づくピッキング予定、赤破線は梱包期限から逆算した必要なピック累計、オレンジ線は入力された実績です。赤破線を満たしていても、各梱包ラインの期限内完了を保証するものではありません。</p>
-        <canvas id="progress-chart" height="340" aria-label="ピック計画、期限内完了に必要なピック数、ピック実績、およびピッキング終了予定・バッチ追加・計画の基準時刻・梱包開始の最終目安のマーカーのグラフ"></canvas>
-        <details class="graph-details"><summary>グラフの読み方</summary><p>青線は、実績があれば最終観測を起点に将来を再計算した採用配置の計画です。赤破線の10時・13時の段差は、バッチ追加による必要条件の更新を示します。瞬間的な作業完了ではありません。赤破線以上でも完了保証にはならず、全体の赤破線を下回るだけで、すべての配置で挽回不可能とは断定できません。ライン別供給・仕掛・人員・梱包能力を含む総合判定を確認してください。ライン別供給・梱包済・仕掛は推定です。</p><p>ピッキング終了予定は、採用された人員配置計画に基づくピッキング終了予定です。実際の完了時刻を保証するものではありません。人員配置・ライン別供給・仕掛・梱包済数量は計画上の推定値です。直近実績速度による「現在の速度が続く場合の終了予測」は詳細分析で確認できます。</p></details>
+        <div class="card-title"><div><span class="tag calc">計算値</span><h3>ピッキング進捗</h3></div><div class="legend"><span><i class="ideal"></i>ピック計画</span><span id="required-legend"><i class="required"></i>必要ピック累計</span><span><i class="actual"></i>ピック実績</span><span><i class="packing-marker"></i>梱包開始の最終目安</span><span><i class="finish-marker"></i>ピッキング終了予定</span><span><i class="current-marker"></i>計画の基準時刻</span></div></div>
+        <div class="chart-controls"><label><input id="show-required-supply" type="checkbox" checked> 必要ピック数を表示</label></div>
+        <p class="planning-note">青＝配置計画、赤破線＝必要ピック累計、橙＝実績。期限達成は別判定です。</p>
+        <canvas id="progress-chart" height="340" aria-label="ピック計画、必要ピック累計、ピック実績、およびピッキング終了予定・バッチ追加・計画の基準時刻・梱包開始の最終目安のマーカーのグラフ"></canvas>
+        <details class="graph-details"><summary>グラフの読み方</summary><p>青線は実績反映後の採用計画、赤破線は梱包側の必要供給条件です。赤破線の段差はバッチ追加を示します。各線は計算・推定値であり、期限達成は別途判定します。</p></details>
         <div class="event-strip" id="event-strip"></div>
       </div>
-      <div class="section-heading compact"><div><p class="eyebrow">PACKING DEADLINES</p><h2>梱包ライン別の完了見込み</h2></div><p class="muted">期限に間に合うかと、ピック供給の不足予測を分けて確認します。</p></div>
-      <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>ライン</th><th>期限に間に合うか</th><th>梱包終了予定</th><th>ピック供給の不足予測</th><th>推奨確認・対応</th></tr></thead><tbody id="packing-summary-body"></tbody></table></div></div>
-      <p class="planning-note">ピック供給の不足予測と、期限に間に合うかは独立した評価です。数量・梱包開始の最終目安・仕掛・過去不足は梱包詳細で確認できます。推奨確認・対応はシステム上の確認案で、人員移動指示を確定するものではありません。</p>
-      <details id="detailed-analysis" class="card analysis-details"><summary>詳しい進捗・計算の根拠</summary><p>ピック計画数（実績反映前）は、最新の入力条件から実績を反映せずに再計算した比較用計画です。実績を反映する青線のピック計画とは異なる場合があります。過去に確定保存した当初計画ではありません。現在の速度が続く場合の終了予測は、人員配置変更による速度変化を反映しない参考値です。</p><div id="analysis-kpi-grid" class="kpi-grid"></div><div id="supply-metrics" class="supply-metrics" aria-live="polite"></div></details>
+      <div class="section-heading compact"><div><p class="eyebrow">PACKING DEADLINES</p><h2>梱包ライン別の完了見込み</h2></div></div>
+      <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>ライン</th><th>期限に間に合うか</th><th>梱包終了予定</th><th>ピック供給の不足予測</th><th>確認・対応の目安</th></tr></thead><tbody id="packing-summary-body"></tbody></table></div></div>
+      <p class="planning-note">供給不足と期限超過は別々に判定しています。対応案は参考情報です。</p>
+      <details id="detailed-analysis" class="card analysis-details"><summary>詳しい進捗・計算の根拠</summary><p>比較用計画は実績反映前、青線は実績反映後の計画です。直近速度による予測は配置変更を考慮しません。</p><div id="analysis-kpi-grid" class="kpi-grid"></div><div id="supply-metrics" class="supply-metrics" aria-live="polite"></div></details>
     </section>
 
     <section id="picking" class="panel" aria-labelledby="picking-title">
@@ -61,10 +61,10 @@
     </section>
 
     <section id="packing" class="panel" aria-labelledby="packing-title">
-      <div class="section-heading"><div><p class="eyebrow">PACKING DETAIL</p><h2 id="packing-title">梱包詳細</h2></div><p class="muted">梱包先の想定配分率100.1%を計算時に正規化</p></div>
+      <div class="section-heading"><div><p class="eyebrow">PACKING DETAIL</p><h2 id="packing-title">梱包詳細</h2></div></div>
       <div id="packing-notice" class="notice"></div>
-      <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>ライン</th><th>梱包先の想定配分率</th><th>概算件数</th><th>計画時点の処理能力</th><th>配置人数の設定</th><th>引渡し締切</th><th>作業完了余裕（分）</th><th>梱包終了予定</th><th>梱包開始の最終目安時刻</th><th>期限に間に合うか</th><th>必要ピック数との差（計画値）</th><th>今後の供給不足開始時刻</th><th>最大不足件数（予測）</th><th>仕掛残数（推定）</th><th>梱包終了期限</th><th>ピック供給の不足予測</th><th>過去の供給不足（推定）</th></tr></thead><tbody id="packing-detail-body"></tbody></table></div></div>
-      <p class="footnote">※ 手梱包は配送区分ごとの締切を同一ラインの能力で処理します。機械4ラインは固定能力・固定人数であり、人数比例で能力を変更しません。</p>
+      <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>ライン</th><th>想定配分率</th><th>概算件数</th><th>計画処理能力</th><th>設定人数</th><th>引渡し締切</th><th>作業完了余裕（分）</th><th>梱包終了予定</th><th>最終開始目安</th><th>期限に間に合うか</th><th>必要ピックとの差（計画）</th><th>供給不足開始予測</th><th>最大不足（予測）</th><th>仕掛残（推定）</th><th>梱包終了期限</th><th>ピック供給の不足予測</th><th>過去不足（推定）</th></tr></thead><tbody id="packing-detail-body"></tbody></table></div></div>
+      <p class="footnote">手梱包は配送区分別の締切、機械梱包は固定能力・固定人数で計算します。</p>
     </section>
 
     <section id="settings" class="panel" aria-labelledby="settings-title">
@@ -76,11 +76,11 @@
       </div>
       <details class="card planning-settings">
         <summary>人員・梱包ラインの詳細条件（任意）</summary>
-        <p class="planning-note">従来の当日入力と標準処理能力・梱包先の設定だけで概算できます。空欄は標準仮定で試算し、未確定のまま保持します。詳細入力は計算時に優先します。開始時点のピック済み・未梱包件数は6時バッチに含まれます。</p>
+        <p class="planning-note">基本項目のみでも試算できます。詳細入力は標準設定より優先します。</p>
         <div id="plan-settings"></div>
       </details>
-      <div class="card table-card"><div class="card-title"><div><span class="tag actual-tag">実績値</span><h3>ピッキング完了実績の入力</h3></div><button id="add-actual" class="btn primary">＋ 実績を追加</button></div><div class="table-scroll"><table><thead><tr><th>実績確認時刻</th><th>累計ピック完了件数</th><th></th></tr></thead><tbody id="actual-table-body"></tbody></table></div><p class="footnote">その時刻までに完了したピッキングの累計件数を入力してください。10分間で増えた件数ではありません。ピッキング開始時刻を基準に10分単位で入力してください。空欄は0ではなく未入力として扱い、最初の空欄以降はグラフを描画しません。工程別内訳はPhase 2で対応予定です。</p></div>
-      <details class="card table-card"><summary>標準処理能力・梱包先の設定</summary><div class="table-scroll"><table><thead><tr><th>区分</th><th>名称</th><th>標準処理能力</th><th>標準配置人数</th><th>梱包先の想定配分率（%）</th><th>設定状態</th></tr></thead><tbody id="master-table-body"></tbody></table></div></details>
+      <div class="card table-card"><div class="card-title"><div><span class="tag actual-tag">実績値</span><h3>ピッキング完了実績の入力</h3></div><button id="add-actual" class="btn primary">＋ 実績を追加</button></div><div class="table-scroll"><table><thead><tr><th>実績確認時刻</th><th>累計ピック完了件数</th><th></th></tr></thead><tbody id="actual-table-body"></tbody></table></div><p class="footnote">10分刻みの累計完了件数を入力。空欄以降はグラフに表示しません。</p></div>
+      <details class="card table-card"><summary>標準処理能力・梱包先の設定</summary><div class="table-scroll"><table><thead><tr><th>区分</th><th>名称</th><th>標準処理能力</th><th>標準配置人数</th><th>想定配分率（%）</th><th>設定状態</th></tr></thead><tbody id="master-table-body"></tbody></table></div></details>
     </section>
   </main>
   <footer>LOCAL DEMO · データはこのブラウザの localStorage のみに保存されます</footer>

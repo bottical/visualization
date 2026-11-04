@@ -327,13 +327,13 @@ function getPlanPresentation(evaluation) {
   const confirmation = confirmed ? "条件確認済み" : "未確定条件あり";
   if (evaluation.scenarioStatus === "unknown") return {
     title: "算出不可", result: "算出不可", confirmation, tone: "warn",
-    description: "必要な入力が不足または不正です。入力条件と能力の設定を確認してください。"
+    description: "入力条件を確認してください。"
   };
   const possible = evaluation.scenarioStatus === "feasible";
   const result = possible ? "概算：期限内完了可能" : "概算：期限内完了困難";
   return { title: confirmed ? possible ? "計画成立（モデル上）" : "計画不成立" : result,
     result, confirmation, tone: possible ? confirmed ? "good" : "warn" : "bad",
-    description: possible ? "人員配置候補を1分単位で検証し、対象の梱包完了期限に間に合う計画を得ました。" : evaluation.failureKind === "physical" ? "定義済みの設備能力・稼働時間では、対象の梱包期限までの処理能力が不足します。" : "今回の候補探索では期限内完了可能な配置を発見できませんでした。別の配置で解決できる可能性があります。"
+    description: possible ? "期限内に完了する配置案があります。" : evaluation.failureKind === "physical" ? "梱包能力が不足しています。" : "期限内に完了する配置案が見つかりませんでした。"
   };
 }
 function readPlanningObservations(input, model) {
